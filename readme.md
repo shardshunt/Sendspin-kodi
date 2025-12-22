@@ -12,7 +12,41 @@ This addon was developed with the assistance of AI.
 
 The service connects to a Sendspin server using a WebSocket connection. When an audio stream begins, the addon starts a local web server on your Kodi device. This server provides the incoming audio as a `.wav` stream.
 
-The addon then tells the Kodi player to play this local stream, effectively acting as a proxy for the Sendspin audio. This allows for use of Kodi's native player. 
+The addon then tells the Kodi player to play this local stream, effectively acting as a proxy for the Sendspin audio. This allows for seamless integration with Kodi's native player.
+
+## Installation
+
+To install the addon, you first need to package it into a zip file.
+
+### 1. Download Dependencies
+
+The addon requires several Python libraries to function. A helper script is included to download them into the correct folder.
+
+**Prerequisites:** You must have `Python 3.11` and `pip` installed on your system.
+
+
+Run the script:
+```
+python3 /service.sendspin/tools/get_libs.py
+```
+This will install the dependencies into the `service.sendspin/resources/lib` folder.
+
+### 2. Package the Addon
+
+After the dependencies are downloaded, you need to create a zip file of the `service.sendspin` directory contents.
+
+
+Zip the `service.sendspin` directory.
+
+### 3. Install in Kodi
+
+1.  Open Kodi.
+2.  Go to **Settings** (the gear icon).
+3.  Select **Add-ons**.
+4.  Select **Install from zip file**.
+5.  Navigate to the location where you saved `service.sendspin.zip`.
+6.  Select the zip file to install it.
+7.  Wait for the "Add-on installed" notification.
 
 
 ## Configuration
