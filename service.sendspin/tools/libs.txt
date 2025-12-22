@@ -1,6 +1,0 @@
-aiohttp
-mashumaro
-zeroconf
-pillow
-orjson
-av

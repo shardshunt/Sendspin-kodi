@@ -1,11 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<addon id="service.sendspin" name="Sendspin Service" version="1.0.0" provider-name="You">
+<addon id="service.sendspin"
+       name="Sendspin Service"
+       version="0.0.1"
+       provider-name="Shards">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
   </requires>
   <extension point="xbmc.service" library="service.py" start="startup" />
   <extension point="xbmc.addon.metadata">
-    <summary>Background Sendspin proxy</summary>
+    <summary lang="en_GB">Sendspin client and audio proxy service</summary>
+    <description lang="en_GB">
+This service connects to a Sendspin audio server and proxies the audio into Kodi's native player.
+
+It works by creating a local HTTP server that streams the audio in WAV format, and then directs the Kodi player to this local URL.
+
+The addon is in an alpha state and was developed with AI assistance.
+    </description>
+    <disclaimer lang="en_GB">This is experimental software and is provided "as is", without warranty of any kind. Use at your own risk.</disclaimer>
     <platform>all</platform>
+    <license>TBC</license>
+    <website>https://github.com/shardshunt/Sendspin-kodi</website>
+    <assets>
+      <icon>icon.png</icon>
+    </assets>
   </extension>
 </addon>
