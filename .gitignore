@@ -1,0 +1,17 @@
+# Ignore vendored addon libraries (keeps repo small)
+service.sendspin/resources/lib/
+
+# Deployment script (machine-specific)
+upload
+
+# Common Python / editor ignores
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+*.dist-info/
+.env
+.DS_Store
+.vscode/
+.idea/
+*.sync-conflict-*

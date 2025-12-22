@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<settings>
+    <category label="32001">
+        <setting type="sep"/>
+    </category>
+
+    <category label="Connection">
+        <setting id="server_url" type="text" label="Server WebSocket URL" default="ws://192.168.0.161:8927/sendspin" />
+        <setting id="proxy_port" type="number" label="Local proxy port" default="59999" />
+    </category>
+
+    <category label="Client">
+        <setting id="client_id" type="text" label="Client ID" default="kodi-sendspin-client" />
+        <setting id="client_name" type="text" label="Client Name" default="Kodi Room" />
+    </category>
+
+    <category label="Logging">
+        <setting id="log_path" type="text" label="Log file path" default="/storage/.kodi/temp/sendspin-service.log" />
+        <setting id="startup_err_path" type="text" label="Startup error file" default="/storage/.kodi/temp/sendspin-startup-error.txt" />
+    </category>
+</settings>
