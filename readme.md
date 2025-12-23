@@ -16,8 +16,6 @@ The addon then tells the Kodi player to play this local stream, effectively acti
 
 ## Installation
 
-To install the addon, you first need to package it into a zip file.
-
 ### 1. Download Dependencies
 
 The addon requires several Python libraries to function. A helper script is included to download them into the correct folder.

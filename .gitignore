@@ -1,8 +1,21 @@
+# Ignore the virtual environment folder
+venv/
+.venv/
+env/
+
+#ignore workspace
+*.code-workspace
+
+#ignore backup files
+*-bk*
+
 # Ignore vendored addon libraries (keeps repo small)
 service.sendspin/resources/lib/
 
 # Deployment script (machine-specific)
 upload
+sendspin-protocol
+KodiDevelopment.html
 
 # Common Python / editor ignores
 __pycache__/
