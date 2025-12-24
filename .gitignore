@@ -17,7 +17,7 @@ service.sendspin/resources/lib/
 
 # Deployment script (machine-specific)
 upload
-sendspin-protocol
+sendspin-protocol.txt
 KodiDevelopment.html
 
 # Common Python / editor ignores
@@ -30,6 +30,7 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+*.py.txt
 
 # Ignore sync conflict files
 *.sync-conflict-*

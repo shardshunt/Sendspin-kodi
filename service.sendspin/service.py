@@ -26,12 +26,15 @@ class Player(xbmc.Player):
         self._on_stopped = kwargs.get('on_playback_stopped')
 
     def onPlayBackStarted(self):
+        logger.info("Kodi player: playback started")
         if self._on_started: self._on_started()
 
     def onPlayBackStopped(self):
+        logger.info("Kodi player: playback stopped")
         if self._on_stopped: self._on_stopped()
 
     def onPlayBackEnded(self):
+        logger.info("Kodi player: playback ended")
         if self._on_stopped: self._on_stopped()
 
 # --- LOGGING SETUP ---
@@ -48,15 +51,20 @@ def setup_logging():
         fh = logging.FileHandler(LOG_PATH)
         fh.setFormatter(fmt)
         logger.addHandler(fh)
-    except Exception: pass
+    except Exception:
+        pass
 
     class KodiHandler(logging.Handler):
         def emit(self, record):
             try:
                 level = xbmc.LOGINFO if record.levelno < 40 else xbmc.LOGERROR
                 xbmc.log(f"[Sendspin] {self.format(record)}", level)
-            except Exception: pass
-    kh = KodiHandler(); kh.setFormatter(fmt); logger.addHandler(kh)
+            except Exception:
+                pass
+
+    kh = KodiHandler()
+    kh.setFormatter(fmt)
+    logger.addHandler(kh)
     logger.propagate = False
     return logger
 
@@ -82,6 +90,7 @@ def create_wav_header(sample_rate=48000, channels=2, bits=16):
 class AudioProxy:
     def __init__(self):
         self.log = logging.getLogger("sendspin.proxy")
+        self.log.setLevel(logging.DEBUG)
         self._subscribers = set()
         self.client = None
         self._player = Player(
@@ -93,34 +102,45 @@ class AudioProxy:
         self._stop_event = asyncio.Event()
         self._is_active = False
         self._kodi_is_playing = False
-        self._li = None 
+        self._li = None
+
+        # NEW FLAG: prevents first-track stale metadata
+        self._have_started_playback = False
+
+        self.log.info("AudioProxy initialized")
 
     def on_kodi_playback_started(self):
         self._kodi_is_playing = True
+        self.log.info("Detected Kodi playback started")
 
     def on_kodi_playback_stopped(self):
         self._kodi_is_playing = False
         self._is_active = False
-        # Clear window properties on stop
-        xbmcgui.Window(10000).clearProperty('Sendspin.Title')
-        xbmcgui.Window(10000).clearProperty('Sendspin.Artist')
-        xbmcgui.Window(10000).clearProperty('Sendspin.Art')
+        self.log.info("Detected Kodi playback stopped; clearing properties and marking inactive")
+        try:
+            xbmcgui.Window(10000).clearProperty('Sendspin.Title')
+            xbmcgui.Window(10000).clearProperty('Sendspin.Artist')
+            xbmcgui.Window(10000).clearProperty('Sendspin.Art')
+        except Exception:
+            self.log.exception("Failed to clear window properties on stop")
 
-    def _start_kodi_playback(self):
-        if self._kodi_is_playing: return
+    def _start_kodi_playback(self, force=False):
+        if self._kodi_is_playing and not force:
+            self.log.debug("Kodi already playing; _start_kodi_playback no-op")
+            return
 
         stream_url = f"http://127.0.0.1:{PROXY_PORT}/stream.wav"
         title = self.current_metadata.get('title')
-        
+
         self._li = xbmcgui.ListItem(label=title)
         self._li.setPath(stream_url)
         self._li.setProperty('IsPlayable', 'true')
-        
+
         tag = self._li.getMusicInfoTag()
         tag.setTitle(title)
         tag.setArtist(self.current_metadata.get('artist'))
         tag.setMediaType('music')
-        
+
         if self.current_artwork_url:
             self._li.setArt({'thumb': self.current_artwork_url, 'icon': self.current_artwork_url})
 
@@ -128,17 +148,25 @@ class AudioProxy:
             self._stop_event.clear()
             self._player.play(item=stream_url, listitem=self._li)
             self._is_active = True
+            self.log.info("Started Kodi playback for Sendspin stream: %s (force=%s)", title, force)
         except Exception:
-            logger.exception("Failed to start player")
+            self.log.exception("Failed to start player")
 
     async def _stop_kodi_playback(self):
         self._is_active = False
         self._stop_event.set()
+        self.log.info("Stopping Kodi playback and notifying subscribers")
         for q in list(self._subscribers):
-            try: await q.put(None)
-            except: pass
-        if self._player.isPlayingAudio():
-            self._player.stop()
+            try:
+                await q.put(None)
+            except Exception:
+                self.log.debug("Failed to notify a subscriber during stop")
+        try:
+            if self._player.isPlayingAudio():
+                self._player.stop()
+                self.log.info("Kodi player stop() called")
+        except Exception:
+            self.log.exception("Error while stopping Kodi player")
 
     async def start_client(self):
         from aiosendspin.client import SendspinClient
@@ -147,6 +175,7 @@ class AudioProxy:
 
         while True:
             try:
+                self.log.info("Preparing Sendspin client hello and attempting connection to %s", SERVER_URL)
                 ps = ClientHelloPlayerSupport(
                     supported_formats=[SupportedAudioFormat(codec=AudioCodec.PCM, channels=2, sample_rate=48000, bit_depth=16)],
                     buffer_capacity=48000 * 2 * 2,
@@ -159,84 +188,174 @@ class AudioProxy:
                 self.client.set_controller_state_listener(self.on_controller_state)
 
                 await self.client.connect(SERVER_URL)
-                while self.client and self.client.connected: await asyncio.sleep(1)
+                self.log.info("Sendspin client connected")
+                while self.client and self.client.connected:
+                    await asyncio.sleep(1)
+                self.log.info("Sendspin client disconnected; will attempt reconnect")
             except Exception:
+                self.log.exception("Sendspin client connection error; retrying in 5s")
                 await asyncio.sleep(5)
 
     async def on_audio_chunk(self, ts, data, fmt):
         for q in list(self._subscribers):
-            if not q.full(): await q.put(data)
+            if not q.full():
+                try:
+                    await q.put(data)
+                except Exception:
+                    self.log.debug("Failed to enqueue audio chunk to a subscriber")
 
     async def on_stream_start(self, msg):
-        self._start_kodi_playback()
+        self.log.info("Stream start message received from server (waiting for metadata)")
+        # Playback is driven by metadata
 
     async def on_metadata(self, payload):
-        if not payload or not hasattr(payload, "metadata"): return
+        if not payload or not hasattr(payload, "metadata"):
+            self.log.debug("Received metadata payload with no metadata")
+            return
+
         meta = payload.metadata
-        def is_val(v): return v is not None and type(v).__name__ != 'UndefinedField'
+
+        def is_val(v):
+            return v is not None and type(v).__name__ != 'UndefinedField'
 
         new_title = meta.title if is_val(meta.title) else "Unknown"
         new_artist = meta.artist if is_val(getattr(meta, 'artist', None)) else "Unknown"
         new_art = meta.artwork_url if hasattr(meta, 'artwork_url') and is_val(meta.artwork_url) else ""
-        
-        if self.current_metadata.get('title') != new_title or self.current_artwork_url != new_art:
+
+        is_placeholder = (new_title == "Unknown" and new_artist == "Unknown")
+
+        track_changed = (
+            not is_placeholder and (
+                self.current_metadata.get('title') != new_title or
+                self.current_metadata.get('artist') != new_artist
+            )
+        )
+
+        # FIRST METADATA PACKET AFTER STARTUP
+        if not self._have_started_playback:
+            self.log.info("First metadata received; starting playback with correct metadata")
+            self._have_started_playback = True
+
             self.current_metadata['title'] = new_title
             self.current_metadata['artist'] = new_artist
             self.current_artwork_url = new_art
-            
-            if self._is_active:
-                # 1. Update Window Properties (Skin fallbacks)
-                win = xbmcgui.Window(10000) # Home window is global
+
+            self._start_kodi_playback(force=True)
+            return
+
+        # NORMAL TRACK CHANGE
+        if track_changed:
+            self.log.info("Track changed; restarting playback with new metadata")
+
+            self.current_metadata['title'] = new_title
+            self.current_metadata['artist'] = new_artist
+            self.current_artwork_url = new_art
+
+            self._start_kodi_playback(force=True)
+
+        # Metadata changed but not a track change
+        elif (
+            self.current_metadata.get('title') != new_title or
+            self.current_metadata.get('artist') != new_artist or
+            self.current_artwork_url != new_art
+        ):
+            self.log.info("Metadata update: %s - %s (art=%s)", new_artist, new_title, bool(new_art))
+            self.current_metadata['title'] = new_title
+            self.current_metadata['artist'] = new_artist
+            self.current_artwork_url = new_art
+
+        # Update Kodi UI
+        if self._is_active:
+            try:
+                win = xbmcgui.Window(10000)
                 win.setProperty('Sendspin.Title', new_title)
                 win.setProperty('Sendspin.Artist', new_artist)
-                if new_art: win.setProperty('Sendspin.Art', new_art)
+                if new_art:
+                    win.setProperty('Sendspin.Art', new_art)
+                self.log.debug("Window properties updated with new metadata")
+            except Exception:
+                self.log.exception("Failed to set window properties for metadata")
 
-                # 2. Update the stored ListItem
+            try:
                 if self._li:
                     tag = self._li.getMusicInfoTag()
                     tag.setTitle(new_title)
                     tag.setArtist(new_artist)
                     if new_art:
                         self._li.setArt({'thumb': new_art, 'icon': new_art, 'poster': new_art})
-                
-                # 3. Pass metadata using notification
+                    self.log.debug("ListItem metadata updated")
+            except Exception:
+                self.log.exception("Failed to update ListItem metadata")
+
+            try:
                 icon = new_art if new_art else "DefaultAudio.png"
-                xbmc.executebuiltin(f'Notification(Now Playing, {new_artist} - {new_title}, 5000, {icon})')
-                
-                # 4. Attempt Playlist Update
-                try:
-                    playlist = xbmc.PlayList(xbmc.PLAYLIST_MUSIC)
-                    pos = playlist.getposition()
-                    if pos >= 0:
-                        it = playlist[pos]
-                        it.setArt({'thumb': new_art})
-                        it.setInfo('music', {'title': new_title, 'artist': new_artist})
-                except: pass
+                xbmc.executebuiltin(
+                    f'Notification(Now Playing, {new_artist} - {new_title}, 5000, {icon})'
+                )
+                self.log.debug("Displayed Now Playing notification")
+            except Exception:
+                self.log.exception("Failed to show notification for metadata")
+
+            try:
+                playlist = xbmc.PlayList(xbmc.PLAYLIST_MUSIC)
+                pos = playlist.getposition()
+                if pos >= 0:
+                    it = playlist[pos]
+                    it.setArt({'thumb': new_art})
+                    it.setInfo('music', {'title': new_title, 'artist': new_artist})
+                    self.log.debug("Playlist entry updated with new metadata")
+            except Exception:
+                self.log.debug("No playlist update performed or failed to update playlist")
 
     async def on_controller_state(self, payload):
         if payload and hasattr(payload, 'command'):
-            if payload.command == PlayerCommand.VOLUME:
-                xbmc.executeJSONRPC(f'{{"jsonrpc":"2.0","method":"Application.SetVolume","params":{{"volume":{int(payload.volume)}}},"id":1}}')
-            elif "stop" in str(payload.command).lower():
-                await self._stop_kodi_playback()
+            self.log.info("Controller command received: %s", getattr(payload, 'command', '<unknown>'))
+            try:
+                if payload.command == PlayerCommand.VOLUME:
+                    xbmc.executeJSONRPC(
+                        f'{{"jsonrpc":"2.0","method":"Application.SetVolume","params":{{"volume":{int(payload.volume)}}},"id":1}}'
+                    )
+                    self.log.debug("Volume command applied: %s", int(payload.volume))
+                elif "stop" in str(payload.command).lower():
+                    self.log.info("Stop command received from controller; stopping playback")
+                    await self._stop_kodi_playback()
+            except Exception:
+                self.log.exception("Failed to apply controller command")
 
     async def stream_handler(self, request):
         from aiohttp import web
-        my_queue = asyncio.Queue(maxsize=1000)
+        from aiohttp.client_exceptions import ClientConnectionResetError
+        my_queue = asyncio.Queue(maxsize=10)
         self._subscribers.add(my_queue)
+        self.log.info("New stream subscriber connected (total=%d)", len(self._subscribers))
         
         resp = web.StreamResponse(headers={"Content-Type": "audio/x-wav", "Cache-Control": "no-cache"})
         await resp.prepare(request)
-        await resp.write(create_wav_header())
-        
+
+        try:
+            await resp.write(create_wav_header())
+        except Exception:
+            self._subscribers.discard(my_queue)
+            self.log.info("Stream subscriber disconnected (total=%d)", len(self._subscribers))
+            return resp
+
         try:
             while not self._stop_event.is_set():
-                data = await asyncio.wait_for(my_queue.get(), timeout=2.0)
-                if data is None: break
-                await resp.write(data)
-        except: pass
+                try:
+                    data = await asyncio.wait_for(my_queue.get(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    continue
+                if data is None:
+                    break
+
+                try:
+                    await resp.write(data)
+                except Exception:
+                    break
         finally:
             self._subscribers.discard(my_queue)
+            self.log.info("Stream subscriber disconnected (total=%d)", len(self._subscribers))
+
         return resp
 
 # --- SERVICE ENTRY POINT ---
@@ -251,19 +370,32 @@ async def run_service():
     app.router.add_get("/stream.wav", PROXY_INSTANCE.stream_handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    await web.TCPSite(runner, "127.0.0.1", PROXY_PORT).start()
+    site = web.TCPSite(runner, "127.0.0.1", PROXY_PORT)
+    await site.start()
+    logger.info("HTTP proxy started on 127.0.0.1:%d", PROXY_PORT)
     
     client_task = asyncio.create_task(PROXY_INSTANCE.start_client())
-    
+    logger.info("Sendspin client task started")
+
     monitor = xbmc.Monitor()
-    while not monitor.abortRequested():
-        await asyncio.sleep(1)
-        
-    client_task.cancel()
-    await runner.cleanup()
+    try:
+        while not monitor.abortRequested():
+            await asyncio.sleep(1)
+    except asyncio.CancelledError:
+        logger.info("Service monitor cancelled")
+    finally:
+        client_task.cancel()
+        logger.info("Shutting down service: cleaning up HTTP runner")
+        await runner.cleanup()
+        logger.info("Service shutdown complete")
 
 if __name__ == "__main__":
     try:
+        logger.info("Starting sendspin service")
         asyncio.run(run_service())
     except Exception:
-        traceback.print_exc()
+        logger.exception("Unhandled exception in sendspin service")
+        try:
+            traceback.print_exc()
+        except Exception:
+            pass
