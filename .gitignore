@@ -9,6 +9,9 @@ env/
 #ignore backup files
 *-bk*
 
+#ignore kodi folder
+xbmc/
+
 # Ignore vendored addon libraries (keeps repo small)
 service.sendspin/resources/lib/
 
@@ -27,4 +30,9 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+
+# Ignore sync conflict files
 *.sync-conflict-*
+
+# Ignore AI exclusion file
+.aiexclude

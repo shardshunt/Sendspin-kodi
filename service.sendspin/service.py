@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import os, sys, traceback
+import os, sys, traceback, time
 ADDON_ROOT = os.path.dirname(os.path.abspath(__file__))
 VENDOR_LIB = os.path.join(ADDON_ROOT, "resources", "lib")
 if os.path.isdir(VENDOR_LIB) and VENDOR_LIB not in sys.path:
@@ -14,33 +14,47 @@ import xbmcgui
 import xbmcaddon
 from aiosendspin.models.types import PlayerCommand
 
-# --- Settings ---
+PROXY_INSTANCE = None
+PLAYER_INSTANCE = None
+
+# --- KODI PLAYER LOGIC ---
+
+class Player(xbmc.Player):
+    def __init__(self, **kwargs):
+        super().__init__()
+        self._on_started = kwargs.get('on_playback_started')
+        self._on_stopped = kwargs.get('on_playback_stopped')
+
+    def onPlayBackStarted(self):
+        if self._on_started: self._on_started()
+
+    def onPlayBackStopped(self):
+        if self._on_stopped: self._on_stopped()
+
+    def onPlayBackEnded(self):
+        if self._on_stopped: self._on_stopped()
+
+# --- LOGGING SETUP ---
+
 addon = xbmcaddon.Addon()
-def _get_setting_str(key: str, default: str) -> str:
-    try:
-        v = addon.getSetting(key)
-        return v if v else default
-    except Exception: return default
-
-def _get_setting_int(key: str, default: int) -> int:
-    try:
-        v = addon.getSetting(key)
-        return int(v) if v else default
-    except Exception: return default
-
-LOG_PATH = _get_setting_str("log_path", "/storage/.kodi/temp/sendspin-service.log")
+LOG_PATH = addon.getSetting("log_path") or "/storage/.kodi/temp/sendspin-service.log"
 
 def setup_logging():
     logger = logging.getLogger("sendspin")
     logger.setLevel(logging.DEBUG)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    fh = logging.FileHandler(LOG_PATH)
-    fh.setFormatter(fmt)
-    logger.addHandler(fh)
+    
+    try:
+        fh = logging.FileHandler(LOG_PATH)
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+    except Exception: pass
+
     class KodiHandler(logging.Handler):
         def emit(self, record):
             try:
-                xbmc.log(f"[Sendspin] {self.format(record)}", xbmc.LOGINFO if record.levelno < 40 else xbmc.LOGERROR)
+                level = xbmc.LOGINFO if record.levelno < 40 else xbmc.LOGERROR
+                xbmc.log(f"[Sendspin] {self.format(record)}", level)
             except Exception: pass
     kh = KodiHandler(); kh.setFormatter(fmt); logger.addHandler(kh)
     logger.propagate = False
@@ -48,228 +62,208 @@ def setup_logging():
 
 logger = setup_logging()
 
-# --- Config ---
-PROXY_PORT = _get_setting_int("proxy_port", 59999)
-SERVER_URL = _get_setting_str("server_url", "ws://192.168.0.161:8927/sendspin")
-CLIENT_ID = _get_setting_str("client_id", "kodi-sendspin-client")
-CLIENT_NAME = _get_setting_str("client_name", "Kodi Room")
+# --- CONFIGURATION & UTILITIES ---
+
+PROXY_PORT = 59999
+SERVER_URL = addon.getSetting("server_url") or "ws://192.168.0.161:8927/sendspin"
+CLIENT_ID = "kodi-sendspin-client"
+CLIENT_NAME = "Kodi Room"
 
 def create_wav_header(sample_rate=48000, channels=2, bits=16):
-    byte_rate = sample_rate * channels * (bits // 8)
-    block_align = channels * (bits // 8)
     return (b"RIFF" + b"\xff\xff\xff\xff" + b"WAVE" + b"fmt " +
             struct.pack("<I", 16) + struct.pack("<H", 1) +
             struct.pack("<H", channels) + struct.pack("<I", sample_rate) +
-            struct.pack("<I", byte_rate) + struct.pack("<H", block_align) +
+            struct.pack("<I", sample_rate * channels * (bits // 8)) + 
+            struct.pack("<H", channels * (bits // 8)) +
             struct.pack("<H", bits) + b"data" + b"\xff\xff\xff\xff")
+
+# --- MAIN AUDIO PROXY ---
 
 class AudioProxy:
     def __init__(self):
         self.log = logging.getLogger("sendspin.proxy")
-        self.raw_log = logging.getLogger("sendspin.raw")
-        self.audio_queue = asyncio.Queue(maxsize=200)
+        self._subscribers = set()
         self.client = None
-        self._player = xbmc.Player()
-        self._playing = False
-        self._is_restarting = False
-        self.current_metadata = {}
-        self.current_artwork_url = None
+        self._player = Player(
+            on_playback_started=self.on_kodi_playback_started,
+            on_playback_stopped=self.on_kodi_playback_stopped
+        )
+        self.current_metadata = {'title': 'Sendspin Stream', 'artist': 'Sendspin'}
+        self.current_artwork_url = ""
         self._stop_event = asyncio.Event()
+        self._is_active = False
+        self._kodi_is_playing = False
+        self._li = None 
 
-    def _log_metadata_summary(self, context="Playback"):
-        title = self.current_metadata.get('title', 'Unknown Title')
-        artist = self.current_metadata.get('artist', 'Unknown Artist')
-        album = self.current_metadata.get('album', 'Unknown Album')
-        duration = self.current_metadata.get('duration', 0)
-        art = "Yes" if self.current_artwork_url else "No"
-        self.log.info(f"[{context}] Track: {artist} - {title} | Album: {album} | Duration: {duration}s | Has Art: {art}")
+    def on_kodi_playback_started(self):
+        self._kodi_is_playing = True
+
+    def on_kodi_playback_stopped(self):
+        self._kodi_is_playing = False
+        self._is_active = False
+        # Clear window properties on stop
+        xbmcgui.Window(10000).clearProperty('Sendspin.Title')
+        xbmcgui.Window(10000).clearProperty('Sendspin.Artist')
+        xbmcgui.Window(10000).clearProperty('Sendspin.Art')
 
     def _start_kodi_playback(self):
-        stream_url = f"http://127.0.0.1:{PROXY_PORT}/stream.wav"
-        self._log_metadata_summary("Starting Kodi Music Playback")
+        if self._kodi_is_playing: return
 
-        li = xbmcgui.ListItem(label=self.current_metadata.get('title', 'Sendspin'), offscreen=True)
-        li.setPath(stream_url)
-        li.setProperty('IsPlayable', 'true')
+        stream_url = f"http://127.0.0.1:{PROXY_PORT}/stream.wav"
+        title = self.current_metadata.get('title')
         
-        t = li.getMusicInfoTag()
-        t.setTitle(self.current_metadata.get('title', 'Sendspin Stream'))
-        t.setArtist(self.current_metadata.get('artist', 'Sendspin'))
-        t.setAlbum(self.current_metadata.get('album', ''))
+        self._li = xbmcgui.ListItem(label=title)
+        self._li.setPath(stream_url)
+        self._li.setProperty('IsPlayable', 'true')
         
-        # Add duration (Sendspin ms -> Kodi seconds)
-        duration_ms = self.current_metadata.get('duration_ms', 0)
-        if duration_ms > 0:
-            t.setDuration(int(duration_ms / 1000))
-        
-        t.setMediaType('music')
+        tag = self._li.getMusicInfoTag()
+        tag.setTitle(title)
+        tag.setArtist(self.current_metadata.get('artist'))
+        tag.setMediaType('music')
         
         if self.current_artwork_url:
-            li.setArt({
-                'thumb': self.current_artwork_url,
-                'icon': self.current_artwork_url,
-                'poster': self.current_artwork_url,
-                'clearart': self.current_artwork_url
-            })
+            self._li.setArt({'thumb': self.current_artwork_url, 'icon': self.current_artwork_url})
 
         try:
             self._stop_event.clear()
-            self._player.play(item=stream_url, listitem=li, windowed=False)
-            self._playing = True
+            self._player.play(item=stream_url, listitem=self._li)
+            self._is_active = True
         except Exception:
-            logger.exception("Failed to start Kodi playback")
+            logger.exception("Failed to start player")
 
-    def _stop_kodi_playback(self):
-        if not self._playing:
-            return
-        try:
-            self.log.info("Stopping Kodi playback...")
-            self._stop_event.set()
-            while not self.audio_queue.empty():
-                try: self.audio_queue.get_nowait()
-                except: break
+    async def _stop_kodi_playback(self):
+        self._is_active = False
+        self._stop_event.set()
+        for q in list(self._subscribers):
+            try: await q.put(None)
+            except: pass
+        if self._player.isPlayingAudio():
             self._player.stop()
-        except Exception:
-            logger.exception("Failed to stop Kodi playback")
-        finally:
-            self._playing = False
 
     async def start_client(self):
-        try:
-            from aiosendspin.client import SendspinClient
-            from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-            from aiosendspin.models.types import Roles, AudioCodec
-            
-            ps = ClientHelloPlayerSupport(
-                supported_formats=[SupportedAudioFormat(codec=AudioCodec.PCM, channels=2, sample_rate=48000, bit_depth=16)],
-                buffer_capacity=48000 * 2 * 2,
-                supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE]
-            )
+        from aiosendspin.client import SendspinClient
+        from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
+        from aiosendspin.models.types import Roles, AudioCodec
 
-            self.client = SendspinClient(CLIENT_ID, CLIENT_NAME, [Roles.PLAYER, Roles.CONTROLLER, Roles.METADATA], player_support=ps)
+        while True:
+            try:
+                ps = ClientHelloPlayerSupport(
+                    supported_formats=[SupportedAudioFormat(codec=AudioCodec.PCM, channels=2, sample_rate=48000, bit_depth=16)],
+                    buffer_capacity=48000 * 2 * 2,
+                    supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE]
+                )
+                self.client = SendspinClient(CLIENT_ID, CLIENT_NAME, [Roles.PLAYER, Roles.CONTROLLER, Roles.METADATA], player_support=ps)
+                self.client.set_audio_chunk_listener(self.on_audio_chunk)
+                self.client.set_stream_start_listener(self.on_stream_start)
+                self.client.set_metadata_listener(self.on_metadata)
+                self.client.set_controller_state_listener(self.on_controller_state)
 
-            # --- Monkey Patch for Raw Logging (filtering server/time) ---
-            original_handle_json = self.client._handle_json_message
-            async def patched_handle_json(data: str):
-                if '"type":"server/time"' not in data:
-                    self.raw_log.debug(f"RAW RECV: {data}")
-                await original_handle_json(data)
-            self.client._handle_json_message = patched_handle_json
-
-            self.client.set_audio_chunk_listener(self.on_audio_chunk)
-            self.client.set_stream_start_listener(self.on_stream_start)
-            self.client.set_stream_end_listener(self.on_stream_end)
-            self.client.set_metadata_listener(self.on_metadata)
-            self.client.set_controller_state_listener(self.on_controller_state)
-
-            await self.client.connect(SERVER_URL)
-            while self.client and self.client.connected:
-                await asyncio.sleep(1)
-        except Exception:
-            logger.exception("Sendspin client failed")
+                await self.client.connect(SERVER_URL)
+                while self.client and self.client.connected: await asyncio.sleep(1)
+            except Exception:
+                await asyncio.sleep(5)
 
     async def on_audio_chunk(self, ts, data, fmt):
-        if self.audio_queue.full():
-            try: self.audio_queue.get_nowait()
-            except: pass
-        await self.audio_queue.put(data)
+        for q in list(self._subscribers):
+            if not q.full(): await q.put(data)
 
     async def on_stream_start(self, msg):
-        self.log.info("Stream start signal received from server")
         self._start_kodi_playback()
 
-    async def on_stream_end(self, roles):
-        self.log.info("Stream end signal received from server")
-        await self.audio_queue.put(None)
-        self._stop_kodi_playback()
-
     async def on_metadata(self, payload):
-        if not payload or not hasattr(payload, "metadata"):
-            return
-
+        if not payload or not hasattr(payload, "metadata"): return
         meta = payload.metadata
-        def is_def(v): return v is not None and type(v).__name__ != 'UndefinedField'
+        def is_val(v): return v is not None and type(v).__name__ != 'UndefinedField'
 
-        changed = False
-        # Basic tags
-        for k in ['title', 'artist', 'album']:
-            val = getattr(meta, k, None)
-            if is_def(val) and self.current_metadata.get(k) != val:
-                self.current_metadata[k] = val
-                changed = True
+        new_title = meta.title if is_val(meta.title) else "Unknown"
+        new_artist = meta.artist if is_val(getattr(meta, 'artist', None)) else "Unknown"
+        new_art = meta.artwork_url if hasattr(meta, 'artwork_url') and is_val(meta.artwork_url) else ""
+        
+        if self.current_metadata.get('title') != new_title or self.current_artwork_url != new_art:
+            self.current_metadata['title'] = new_title
+            self.current_metadata['artist'] = new_artist
+            self.current_artwork_url = new_art
+            
+            if self._is_active:
+                # 1. Update Window Properties (Skin fallbacks)
+                win = xbmcgui.Window(10000) # Home window is global
+                win.setProperty('Sendspin.Title', new_title)
+                win.setProperty('Sendspin.Artist', new_artist)
+                if new_art: win.setProperty('Sendspin.Art', new_art)
 
-        # Extract Duration from progress object
-        if hasattr(meta, 'progress') and is_def(meta.progress):
-            dur = getattr(meta.progress, 'track_duration', 0)
-            if dur != self.current_metadata.get('duration_ms'):
-                self.current_metadata['duration_ms'] = dur
-                self.current_metadata['duration'] = int(dur / 1000)
-                changed = True
-
-        if hasattr(meta, 'artwork_url') and is_def(meta.artwork_url):
-            if self.current_artwork_url != meta.artwork_url:
-                self.current_artwork_url = meta.artwork_url
-                changed = True
-
-        if changed:
-            if self._playing and not self._is_restarting:
-                self._log_metadata_summary("Metadata Update (Restarting Player)")
-                self._is_restarting = True
-                self._stop_kodi_playback()
-                await asyncio.sleep(0.3)
-                self._start_kodi_playback()
-                self._is_restarting = False
-            else:
-                self._log_metadata_summary("Metadata Cached (Pre-play)")
+                # 2. Update the stored ListItem
+                if self._li:
+                    tag = self._li.getMusicInfoTag()
+                    tag.setTitle(new_title)
+                    tag.setArtist(new_artist)
+                    if new_art:
+                        self._li.setArt({'thumb': new_art, 'icon': new_art, 'poster': new_art})
+                
+                # 3. Pass metadata using notification
+                icon = new_art if new_art else "DefaultAudio.png"
+                xbmc.executebuiltin(f'Notification(Now Playing, {new_artist} - {new_title}, 5000, {icon})')
+                
+                # 4. Attempt Playlist Update
+                try:
+                    playlist = xbmc.PlayList(xbmc.PLAYLIST_MUSIC)
+                    pos = playlist.getposition()
+                    if pos >= 0:
+                        it = playlist[pos]
+                        it.setArt({'thumb': new_art})
+                        it.setInfo('music', {'title': new_title, 'artist': new_artist})
+                except: pass
 
     async def on_controller_state(self, payload):
         if payload and hasattr(payload, 'command'):
-            try:
-                if payload.command == PlayerCommand.VOLUME:
-                    xbmc.executeJSONRPC(f'{{"jsonrpc":"2.0","method":"Application.SetVolume","params":{{"volume":{int(payload.volume)}}},"id":1}}')
-                elif payload.command == PlayerCommand.MUTE:
-                    xbmc.executeJSONRPC(f'{{"jsonrpc":"2.0","method":"Application.SetMute","params":{{"mute":{str(bool(payload.muted)).lower()}}},"id":1}}')
-            except Exception: pass
+            if payload.command == PlayerCommand.VOLUME:
+                xbmc.executeJSONRPC(f'{{"jsonrpc":"2.0","method":"Application.SetVolume","params":{{"volume":{int(payload.volume)}}},"id":1}}')
+            elif "stop" in str(payload.command).lower():
+                await self._stop_kodi_playback()
 
     async def stream_handler(self, request):
         from aiohttp import web
-        resp = web.StreamResponse(headers={
-            "Content-Type": "audio/wav", 
-            "Cache-Control": "no-cache",
-            "Connection": "close"
-        })
+        my_queue = asyncio.Queue(maxsize=1000)
+        self._subscribers.add(my_queue)
+        
+        resp = web.StreamResponse(headers={"Content-Type": "audio/x-wav", "Cache-Control": "no-cache"})
         await resp.prepare(request)
+        await resp.write(create_wav_header())
+        
         try:
-            await resp.write(create_wav_header())
             while not self._stop_event.is_set():
-                try:
-                    data = await asyncio.wait_for(self.audio_queue.get(), timeout=1.0)
-                    if data is None: break
-                    await resp.write(data)
-                except asyncio.TimeoutError:
-                    continue
-        except Exception: pass
+                data = await asyncio.wait_for(my_queue.get(), timeout=2.0)
+                if data is None: break
+                await resp.write(data)
+        except: pass
+        finally:
+            self._subscribers.discard(my_queue)
         return resp
 
+# --- SERVICE ENTRY POINT ---
+
 async def run_service():
-    proxy = AudioProxy()
+    global PROXY_INSTANCE, PLAYER_INSTANCE
+    PROXY_INSTANCE = AudioProxy()
+    PLAYER_INSTANCE = PROXY_INSTANCE._player
+    
     from aiohttp import web
     app = web.Application()
-    app.router.add_get("/stream.wav", proxy.stream_handler)
+    app.router.add_get("/stream.wav", PROXY_INSTANCE.stream_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", PROXY_PORT).start()
-    asyncio.create_task(proxy.start_client())
+    
+    client_task = asyncio.create_task(PROXY_INSTANCE.start_client())
+    
     monitor = xbmc.Monitor()
-    while not monitor.abortRequested(): await asyncio.sleep(1)
-    if proxy.client: await proxy.client.disconnect()
+    while not monitor.abortRequested():
+        await asyncio.sleep(1)
+        
+    client_task.cancel()
     await runner.cleanup()
 
-def main():
+if __name__ == "__main__":
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(run_service())
-    except Exception: traceback.print_exc()
-
-if __name__ == "__main__": main()
+        asyncio.run(run_service())
+    except Exception:
+        traceback.print_exc()
