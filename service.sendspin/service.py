@@ -5,6 +5,8 @@ ADDON_ROOT = os.path.dirname(os.path.abspath(__file__))
 VENDOR_LIB = os.path.join(ADDON_ROOT, "resources", "lib")
 if os.path.isdir(VENDOR_LIB) and VENDOR_LIB not in sys.path:
     sys.path.insert(0, VENDOR_LIB)
+if ADDON_ROOT not in sys.path:
+    sys.path.insert(0, ADDON_ROOT)
 
 import struct
 import asyncio
@@ -13,6 +15,10 @@ import xbmc
 import xbmcgui
 import xbmcaddon
 from aiosendspin.models.types import PlayerCommand
+from logger import (
+    init_logger,
+    setup_client_listeners,
+)
 
 PROXY_INSTANCE = None
 PLAYER_INSTANCE = None
@@ -39,41 +45,12 @@ class Player(xbmc.Player):
 
 # --- LOGGING SETUP ---
 
-addon = xbmcaddon.Addon()
-LOG_PATH = addon.getSetting("log_path") or "/storage/.kodi/temp/sendspin-service.log"
-
-def setup_logging():
-    logger = logging.getLogger("sendspin")
-    logger.setLevel(logging.DEBUG)
-    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    
-    try:
-        fh = logging.FileHandler(LOG_PATH)
-        fh.setFormatter(fmt)
-        logger.addHandler(fh)
-    except Exception:
-        pass
-
-    class KodiHandler(logging.Handler):
-        def emit(self, record):
-            try:
-                level = xbmc.LOGINFO if record.levelno < 40 else xbmc.LOGERROR
-                xbmc.log(f"[Sendspin] {self.format(record)}", level)
-            except Exception:
-                pass
-
-    kh = KodiHandler()
-    kh.setFormatter(fmt)
-    logger.addHandler(kh)
-    logger.propagate = False
-    return logger
-
-logger = setup_logging()
+logger = init_logger()
 
 # --- CONFIGURATION & UTILITIES ---
 
 PROXY_PORT = 59999
-SERVER_URL = addon.getSetting("server_url") or "ws://192.168.0.161:8927/sendspin"
+SERVER_URL = xbmcaddon.Addon().getSetting("server_url") or "ws://192.168.0.161:8927/sendspin"
 CLIENT_ID = "kodi-sendspin-client"
 CLIENT_NAME = "Kodi Room"
 
@@ -182,13 +159,29 @@ class AudioProxy:
                     supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE]
                 )
                 self.client = SendspinClient(CLIENT_ID, CLIENT_NAME, [Roles.PLAYER, Roles.CONTROLLER, Roles.METADATA], player_support=ps)
+                
+                # Register audio chunks directly without loffing
                 self.client.set_audio_chunk_listener(self.on_audio_chunk)
-                self.client.set_stream_start_listener(self.on_stream_start)
-                self.client.set_metadata_listener(self.on_metadata)
-                self.client.set_controller_state_listener(self.on_controller_state)
+
+                # Register handlers for events handled by this service with logging
+                _handlers = {
+                    "set_stream_start_listener": self.on_stream_start,
+                    "set_metadata_listener": self.on_metadata,
+                    "set_controller_state_listener": self.on_controller_state,
+                }
+
+                # Pass handlers to logger.py to set up listeners
+                setup_client_listeners(
+                    self.client, 
+                    _handlers, 
+                    log=self.log,
+                    mode="all",
+                    exclude={"set_audio_chunk_listener"}
+                    )
 
                 await self.client.connect(SERVER_URL)
                 self.log.info("Sendspin client connected")
+
                 while self.client and self.client.connected:
                     await asyncio.sleep(1)
                 self.log.info("Sendspin client disconnected; will attempt reconnect")
@@ -399,3 +392,4 @@ if __name__ == "__main__":
             traceback.print_exc()
         except Exception:
             pass
+
