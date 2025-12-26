@@ -190,6 +190,9 @@ class AudioProxy:
                 await asyncio.sleep(5)
 
     async def on_audio_chunk(self, ts, data, fmt):
+    # This method receives raw PCM audio data from the Sendspin server and 
+    # broadcasts it to all active HTTP stream subscribers by placing the 
+    # data chunks into their respective asynchronous queues.
         for q in list(self._subscribers):
             if not q.full():
                 try:
@@ -198,10 +201,16 @@ class AudioProxy:
                     self.log.debug("Failed to enqueue audio chunk to a subscriber")
 
     async def on_stream_start(self, msg):
+    #TODO: figure out if there is a way to actually start the player here while applying correct metadata
+    # Acts as a placeholder for the initial connection signal from the server; 
+    # in this implementation, actual playback initialization is deferred 
+    # until the first metadata packet is received to ensure the UI is accurate.
         self.log.info("Stream start message received from server (waiting for metadata)")
-        # Playback is driven by metadata
 
     async def on_metadata(self, payload):
+    # Handles incoming track information (title, artist, artwork) to update 
+    # the Kodi UI, manage track-change logic, and trigger or restart the 
+    # Kodi player when a new song begins.
         if not payload or not hasattr(payload, "metadata"):
             self.log.debug("Received metadata payload with no metadata")
             return
@@ -301,6 +310,10 @@ class AudioProxy:
                 self.log.debug("No playlist update performed or failed to update playlist")
 
     async def on_controller_state(self, payload):
+    #TODO: this method makes no sense
+    # Processes remote control commands from the Sendspin network, such as 
+    # adjusting the system volume via JSON-RPC or stopping playback 
+    # locally if a 'stop' command is received.
         if payload and hasattr(payload, 'command'):
             self.log.info("Controller command received: %s", getattr(payload, 'command', '<unknown>'))
             try:
@@ -316,6 +329,10 @@ class AudioProxy:
                 self.log.exception("Failed to apply controller command")
 
     async def stream_handler(self, request):
+    # This method acts as the local HTTP server endpoint ("/stream.wav") that 
+    # Kodi's player connects to; it manages the lifecycle of a stream request, 
+    # serves the WAV header, and continuously pipes audio data from the 
+    # internal queue to the Kodi player until the stream is stopped.
         from aiohttp import web
         from aiohttp.client_exceptions import ClientConnectionResetError
         my_queue = asyncio.Queue(maxsize=10)

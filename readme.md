@@ -57,3 +57,29 @@ The addon can be configured through its settings in Kodi.
 -   **Client Name**: A friendly name to identify this client on the Sendspin server.
 -   **Log file path**: The location to store the addon's log file.
 -   **Startup error file**: A file to log any critical errors that happen when the service first starts.
+
+
+# Sendspin Kodi Service - Implementation TODO
+
+## 1. Clock Synchronization
+- [ ] Implement `client/time` background loop to send client timestamps.
+- [ ] Handle `server/time` responses to calculate local clock offset.
+- [ ] Use big-endian timestamps from Type 4 binary chunks to sync audio playback.
+
+## 2. Protocol Handshake & State
+- [ ] Update `client/hello` to include `version: 1` and `device_info`.
+- [ ] Wait for `server/hello` before sending subsequent messages.
+- [ ] Send initial `client/state` (volume/mute) immediately after handshake.
+
+## 3. Command & Event Handling
+- [ ] Add listener for `stream/clear` to flush Kodi playback buffers.
+- [ ] Implement `client/goodbye` on service shutdown with reason codes.
+- [ ] Send `client/state` updates to server when local Kodi volume changes.
+
+## 4. UI & Group Logic
+- [ ] Implement `group/update` listener to sync with group `playback_state`.
+- [ ] Calculate and display track progress using the protocol formula.
+
+## 5. Optional Enhancements
+- [ ] Implement `Artwork` role for high-quality binary image transfers.
+- [ ] Add `stream/request-format` logic for dynamic codec switching (e.g., FLAC).
