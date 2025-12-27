@@ -61,25 +61,9 @@ The addon can be configured through its settings in Kodi.
 
 # Sendspin Kodi Service - Implementation TODO
 
-## 1. Clock Synchronization
-- [ ] Implement `client/time` background loop to send client timestamps.
-- [ ] Handle `server/time` responses to calculate local clock offset.
-- [ ] Use big-endian timestamps from Type 4 binary chunks to sync audio playback.
-
-## 2. Protocol Handshake & State
-- [ ] Update `client/hello` to include `version: 1` and `device_info`.
-- [ ] Wait for `server/hello` before sending subsequent messages.
-- [ ] Send initial `client/state` (volume/mute) immediately after handshake.
-
-## 3. Command & Event Handling
-- [ ] Add listener for `stream/clear` to flush Kodi playback buffers.
-- [ ] Implement `client/goodbye` on service shutdown with reason codes.
-- [ ] Send `client/state` updates to server when local Kodi volume changes.
-
-## 4. UI & Group Logic
-- [ ] Implement `group/update` listener to sync with group `playback_state`.
-- [ ] Calculate and display track progress using the protocol formula.
-
-## 5. Optional Enhancements
-- [ ] Implement `Artwork` role for high-quality binary image transfers.
-- [ ] Add `stream/request-format` logic for dynamic codec switching (e.g., FLAC).
+- [ ] **Handle Stream End**: Create an `on_stream_end` method in `AudioProxy` to stop Kodi playback when a `stream/end` message is received. Register it with `set_stream_end_listener`.
+- [ ] **Handle Stream Clear**: Create an `on_stream_clear` method to handle buffer clearing (e.g., on seek). This should stop or restart playback. Register it with `set_stream_clear_listener`.
+- [ ] **Handle Server Commands**: Create an `on_server_command` method to process direct commands from the server (e.g., volume/mute). Register it with `set_server_command_listener`.
+- [ ] **Handle Disconnection**: Create an `on_disconnect` method to clean up the player state immediately when the connection is lost. Register it with `set_disconnect_listener`.
+- [ ] **Handle Group Updates**: Create an `on_group_update` method to manage multi-room synchronization events. Start by logging the event data. Register it with `set_group_update_listener`.
+- [ ] **Review Existing TODOs**: Address the `TODO` comments in `on_stream_start` and `on_controller_state` to improve the existing handlers.
