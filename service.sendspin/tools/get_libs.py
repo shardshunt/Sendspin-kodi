@@ -17,10 +17,11 @@ PACKAGES = [
     "zeroconf",
     "pillow",
     "orjson",
-    "av==14.4.0",
+    "av==14.2.0",
+    "numpy"
 ]
 
-AIOSENDSPIN_PKG = "aiosendspin==1.1.4"
+AIOSENDSPIN_PKG = "aiosendspin==3.0.0"
 
 
 def run(cmd: list[str]) -> None:
