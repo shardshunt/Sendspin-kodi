@@ -6,7 +6,7 @@ Centralised logging and diagnostic helpers for the Sendspin service.
   for all listeners, or none.
     - "unhandled" (default): attach only to listeners not explicitly handled by
       the service (safe default).
-    - "all": attach to every set_*_listener method (except those explicitly
+    - "all": attach to every add_*_listener method (except those explicitly
       excluded below).
     - "none": do not attach any automatic listeners.
 """
@@ -190,7 +190,7 @@ def setup_client_listeners(
     exclude: Optional[set[str]] = None
 ):
     """
-    Inspects the client for available 'set_*_listener' methods.
+    Inspects the client for available 'add_*_listener' methods.
     Wraps and attaches logging handlers to each listener based on the specified "mode":
         "all", "unhandled", or "none"
     also can exclude specific listeners via the exclude set.
@@ -203,7 +203,7 @@ def setup_client_listeners(
 
     for attr in dir(client):
         # 1. Filter for listener setters only
-        if not attr.startswith("set_") or "listener" not in attr:
+        if not attr.startswith("add_") or "listener" not in attr:
             continue
         if attr in exclude:
             continue

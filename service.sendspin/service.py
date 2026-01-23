@@ -96,14 +96,14 @@ class AudioStreamBuffer:
                 pack("<H", channels * bps) +
                 pack("<H", self._format.bit_depth) + b"data" + pack("<I", large_size))
 
-    async def put_audio(self, server_timestamp_us: int, data: bytes, pcm_format):
+    def put_audio(self, server_timestamp_us: int, data: bytes, pcm_format):
         """Puts audio data into the buffer."""
         if self._queue.full():
             try:
                 self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 pass
-        await self._queue.put(data)
+        self._queue.put_nowait(data)
 
 
     async def stream_generator(self, _):
@@ -233,11 +233,12 @@ class SendspinServiceController:
 
         handlers = {
             "add_stream_start_listener": self.on_stream_start,
-            "add_audio_chunk_listener": self.on_audio_chunk,
             "add_stream_end_listener": self.on_stream_end,
             "add_server_command_listener": self.on_server_command,
         }
-        logger.setup_client_listeners(self.client, handlers, log=self.logger, mode="all")
+        logger.setup_client_listeners(self.client, handlers, log=self.logger, mode="all",exclude="add_audio_chunk_listener")
+
+        self.client.add_audio_chunk_listener(self.on_audio_chunk)
 
         async def handle_incoming_connection(ws):
             await self.client.attach_websocket(ws)
@@ -271,7 +272,7 @@ class SendspinServiceController:
         await self.client.disconnect()
         await self.proxy.stop()
 
-    async def on_stream_start(self, message: StreamStartMessage):
+    def on_stream_start(self, message: StreamStartMessage):
         """Triggered when Sendspin starts a stream."""
         self.logger.info("Stream Start received")
         if message.payload.player:
@@ -284,8 +285,8 @@ class SendspinServiceController:
             self.buffer.set_format(fmt)
         self.is_playing = False
 
-    async def on_audio_chunk(self, server_timestamp_us: int, audio_data: bytes, audio_format):
-            await self.buffer.put_audio(server_timestamp_us, audio_data, audio_format.pcm_format)
+    def on_audio_chunk(self, server_timestamp_us: int, audio_data: bytes, audio_format):
+            self.buffer.put_audio(server_timestamp_us, audio_data, audio_format.pcm_format)
 
             if not self.is_playing and self.buffer._queue.qsize() >= 50:
                 self.is_playing = True
@@ -294,14 +295,14 @@ class SendspinServiceController:
                 self.player.play_url(self.proxy.get_stream_url())
                 self.logger.info(f"Kodi player started with URL: {stream_url}")
 
-    async def on_stream_end(self, roles=None):
+    def on_stream_end(self, roles=None):
         """Triggered when stream ends."""
         self.logger.info("Stream End received")
         self.player.stop()
         self.buffer.clear()
         self.is_playing = False
 
-    async def on_server_command(self, payload: ServerCommandPayload):
+    def on_server_command(self, payload: ServerCommandPayload):
         """Handle Volume/Mute commands."""
         self.logger.debug("Server Command received")
     
