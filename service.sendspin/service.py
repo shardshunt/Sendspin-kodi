@@ -2,8 +2,9 @@
 """
 Sendspin Service for Kodi.
 
-This service runs in the background, connects to a Sendspin server,
-buffers received audio, and streams it locally to the Kodi player via an HTTP proxy.
+This service runs in the background, connects to a Sendspin server via WebSocket,
+advertises itself via mDNS, and streams received PCM audio to the local hardware
+using PulseAudio.
 """
 
 # system imports
@@ -18,14 +19,8 @@ if ADDON_ROOT not in sys.path:
     sys.path.insert(0, ADDON_ROOT)
 
 # standard library imports
-import asyncio
-import logging
-import xbmc, xbmcgui, xbmcaddon
-from struct import pack
-
-# third-party imports
-import aiohttp
-from aiohttp import web
+import asyncio, logging, subprocess
+import xbmc, xbmcaddon
 
 # aiosendspin imports
 from aiosendspin.client import SendspinClient, PCMFormat, SendspinTimeFilter, ClientListener
@@ -33,10 +28,10 @@ from aiosendspin.models.types import Roles, AudioCodec, PlayerCommand
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.core import StreamStartMessage, ServerCommandPayload
 
-# local imports
+# Throttled logger for debug
 import logger
-
 class ThrottledLogger:
+    """Helper to prevent log flooding during high-frequency events."""
     def __init__(self, interval=0.5):
         self.interval = interval
         self.last_log_time = 0
@@ -46,167 +41,154 @@ class ThrottledLogger:
         if current_time - self.last_log_time >= self.interval:
             xbmc.log(f"[Sendspin-Debug] {message}", level=xbmc.LOGDEBUG)
             self.last_log_time = current_time
-
-# Initialize the helper
 throttledLog = ThrottledLogger(1)
 
 # --- CONFIGURATION & UTILITIES ---
 
-PROXY_PORT = xbmcaddon.Addon().getSetting("proxy_port") or 59999
-# SERVER_URL = xbmcaddon.Addon().getSetting("server_url") or "ws://192.168.0.161:8927/sendspin"
 CLIENT_ID = xbmcaddon.Addon().getSetting("client_id") or "kodi-sendspin-client"
-CLIENT_NAME = "Kodi" #xbmcaddon.Addon().getAddonInfo("client_name_") or "Kodi"
-PROXY_HOST = "127.0.0.1"
+CLIENT_NAME = "Kodi"
 BUFFERSIZE_REQUEST_MS = 5000 # 5 seconds
 
-class AudioStreamBuffer:
-    def __init__(self):
-        self.logger = logging.getLogger("sendspin")
-        self._queue = asyncio.Queue(maxsize=500) 
-        self._format = None
-        self._format_event = asyncio.Event()
-
-    def set_format(self, pcm_format):
-        self._format = pcm_format
-        self._format_event.set()
-
-    def clear(self):
-        """Clears the buffer and resets sync state."""
-        while not self._queue.empty():
-            try:
-                self._queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-        self._format_event.clear()
-
-    def _get_wav_header(self) -> bytes:
-        if not self._format: return b""
-        bps = self._format.bit_depth // 8
-        rate = self._format.sample_rate
-        channels = self._format.channels
-        # Use a large positive value for chunk sizes to indicate a very long stream.
-        # 0x7FFFFFF0 is a large positive 32-bit value, chosen to be a bit less than max.
-        # Some players may misinterpret 0xFFFFFFFF (-1 as signed int).
-        large_size = 0x7FFFFFF0
-        riff_chunk_size = large_size + 36 # 36 bytes for the header fields before data
-        return (b"RIFF" + pack("<I", riff_chunk_size) + b"WAVE" + b"fmt " +
-                pack("<I", 16) + pack("<H", 1) +
-                pack("<H", channels) + pack("<I", rate) +
-                pack("<I", rate * channels * bps) + 
-                pack("<H", channels * bps) +
-                pack("<H", self._format.bit_depth) + b"data" + pack("<I", large_size))
-
-    def put_audio(self, server_timestamp_us: int, data: bytes, pcm_format):
-        """Puts audio data into the buffer."""
-        if self._queue.full():
-            try:
-                self._queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-        self._queue.put_nowait(data)
-
-
-    async def stream_generator(self, _):
-        """ Yields audio chunks for the HTTP response. """
-        await self._format_event.wait()
-        yield self._get_wav_header()
-        while True:
-            chunk = await self._queue.get()
-            yield chunk
-
-
-class LocalAudioProxy:
+class AudioRouter:
     """
-    A lightweight HTTP Server running inside Kodi.
-    """
-    def __init__(self, buffer: AudioStreamBuffer, port: int = PROXY_PORT):
-        self._buffer = buffer
-        self._port = port
-        self._client: SendspinClient = None
-        self._runner: web.AppRunner = None
-        self.logger = logging.getLogger("sendspin")
+    Manages PulseAudio modules to ensure audio routing works correctly.
     
-    async def start(self, client: SendspinClient):
-        self._client = client
-        app = web.Application()
-        app.router.add_get('/stream.wav', self.handle_stream)
-        self._runner = web.AppRunner(app)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, PROXY_HOST, self._port)
-        await site.start()
+    It creates a virtual Null Sink ('Sendspin_Sink') and loops it back 
+    to the physical hardware. This allows Sendspin to play audio even 
+    if Kodi holds a lock on the hardware device, as PulseAudio handles 
+    the mixing.
+    """
+    def __init__(self):
+        self.sink_name = "Sendspin_Sink"
+        self.loopback_id = None
+        self.null_sink_id = None
+        self.logger = logging.getLogger("sendspin")
 
-    async def stop(self):
-        if self._runner:
-            await self._runner.cleanup()
+    def _run_pactl(self, args):
+        try:
+            result = subprocess.run(['pactl'] + args, capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception as e:
+            self.logger.info(f"[Sendspin] pactl error: {e}",)
+        return None
 
-    async def handle_stream(self, request):
-        """Handles the HTTP GET request from Kodi Player."""
-        response = web.StreamResponse(
-        status=200,
-        reason='OK',
-        headers={
-            'Content-Type': 'audio/x-wav',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Accept-Ranges': 'none',
-            }
-        )
-        await response.prepare(request)
+    def setup_routing(self):
+        """Creates a virtual sink and loops it to hardware."""
+        if not self.null_sink_id:
+            cmd = ['load-module', 'module-null-sink', f'sink_name={self.sink_name}', 'sink_properties=device.description=Sendspin_Virtual_Cable']
+            self.null_sink_id = self._run_pactl(cmd)
+
+
+        hw_sink = self.get_hardware_sink()
+
+        if hw_sink and not self.loopback_id:
+            loop_cmd = [
+                'load-module', 'module-loopback',
+                f'source={self.sink_name}.monitor',
+                f'sink={hw_sink}',
+                'latency_msec=100'
+            ]
+            self.loopback_id = self._run_pactl(loop_cmd)
+            self.logger.info(f"Routing {self.sink_name} -> {hw_sink}")
+            
+        return self.sink_name
+
+    def get_hardware_sink(self):
+        """Finds the actual alsa_output sink, ignoring virtual devices."""
+        out = self._run_pactl(['list', 'sinks', 'short'])
+        if out:
+            for line in out.split('\n'):
+                if "alsa_output" in line:
+                    return line.split('\t')[1]
+        return "@DEFAULT_SINK@"
+
+    def cleanup(self):
+        """Clean up modules to prevent PulseAudio from getting cluttered."""
+        if self.loopback_id:
+            self._run_pactl(['unload-module', self.loopback_id])
+            self.loopback_id = None
+        if self.null_sink_id:
+            self._run_pactl(['unload-module', self.null_sink_id])
+            self.null_sink_id = None
+
+
+class CLIPlaybackEngine:
+    """
+    Handles audio playback by piping raw PCM data into the 'pacat' command.
+    """
+    def __init__(self):
+        self.process = None
+        self.logger = logging.getLogger("sendspin")
+
+    def start(self, rate, channels, bit_depth, target_sink):
+        """Starts the pacat process targeting the specific sink."""
+        self.stop()
+        fmt = f"s{bit_depth}le"
+        cmd = [
+            'pacat', 
+            '--playback',
+            '--device', target_sink,
+            '--format', fmt, 
+            '--rate', str(rate), 
+            '--channels', str(channels),
+            '--latency-msec=100',
+            '--client-name=SendspinPlayer'
+        ]
+        try:
+            self.process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+            self.logger.info(f"started player with command{' '.join(cmd)}")
+        except Exception as e:
+            self.logger.info(f"exception staring aplay with: {' '.join(cmd)}. Exception: {e}")
+
+    def play_chunk(self, data):
+        """Writes a chunk of PCM data to the player process."""
+        if not self.process:
+            return
+
+        # Check if pcat died silently
+        poll = self.process.poll()
+        if poll is not None:
+            err = self.process.stderr.read().decode().strip()
+            self.logger.info(f"[Sendspin] pacat died with code {poll}. Error: {err}")
+            self.stop()
+            return
 
         try:
-            # Consume the buffer generator
-            async for chunk in self._buffer.stream_generator(self._client):
-                await response.write(chunk)
-        except (aiohttp.client_exceptions.ClientConnectionResetError, asyncio.CancelledError):
-            self.logger.info("Client disconnected from the stream.")
-        
-        return response
+            self.process.stdin.write(data)
+        except BrokenPipeError:
+            err = self.process.stderr.read().decode().strip()
+            self.logger.info(f"[Sendspin] pacat pipe broken: {err}")
+            self.stop()
 
-    def get_stream_url(self) -> str:
-        """Returns the local URL that Kodi should play."""
-        return f"http://{PROXY_HOST}:{self._port}/stream.wav"
-    
-class KodiPlayerManager(xbmc.Player):
-    """
-    Wrapper around xbmc.Player to handle playback triggers.
-    """
-    
-    def __init__(self, controller):
-        super().__init__()
-        self.controller = controller
-    
-    def play_url(self, url: str):
-        """Instructs Kodi to open the HTTP Proxy URL."""
-        item = xbmcgui.ListItem("Sendspin Stream")
-        item.setProperty("MimeType", "audio/wav")
-        item.setProperty("TotalTime", "0")
-        item.setProperty("IsLive", 'true')
-        music_tag = item.getMusicInfoTag()
-        music_tag.setTitle("Sendspin Stream")
-        music_tag.setArtist("Sendspin")
-        self.play(url, item)
+    def stop(self):
+        """Terminates the playback process."""
+        if self.process:
+            self.logger.info("stopping playback engine")
+            self.process.terminate()
+            self.process = None
 
-    def onPlayBackStopped(self):
-        """Override: Called when Kodi stops playing."""
-        self.controller.on_kodi_player_stopped()
 
 class SendspinServiceController:
     """
     Main Service Controller.
+    
+    Orchestrates the Sendspin client, the audio router, and the playback engine.
+    Handles network events and routes audio data to the player.
     """
     def __init__(self):
         self.logger = logging.getLogger("sendspin")
         self.addon = xbmcaddon.Addon()
-        self.buffer = AudioStreamBuffer()
+        self.engine = CLIPlaybackEngine()
+        self.router = AudioRouter()
         self.client: SendspinClient = None
-        self.proxy = LocalAudioProxy(self.buffer)
-        self.player = KodiPlayerManager(self)
-        bytes_per_sec_max = 48000 * 2 * 2  # 48kHz, 16-bit, stereo
-        self.buffer_bytes = int((BUFFERSIZE_REQUEST_MS / 1000.0) * bytes_per_sec_max)
-        self.is_playing = False
+        self.sample_rate = 48000
+        self.channels = 2
+        self.bit_depth = 16
+        self.buffer_bytes = int((BUFFERSIZE_REQUEST_MS / 1000.0) * self.sample_rate * self.channels * (self.bit_depth // 8))
     
     async def setup(self):
-        """Registers listeners and starts the Proxy."""
+        """Registers listeners and starts the Client Listener."""
 
         #define capabilities
         self.player_support = ClientHelloPlayerSupport(
@@ -228,7 +210,7 @@ class SendspinServiceController:
             client_name=CLIENT_NAME,
             roles=[Roles.PLAYER],
             player_support=self.player_support,
-            static_delay_ms=3000,
+            static_delay_ms=100,
         )
 
         handlers = {
@@ -237,7 +219,6 @@ class SendspinServiceController:
             "add_server_command_listener": self.on_server_command,
         }
         logger.setup_client_listeners(self.client, handlers, log=self.logger, mode="all",exclude="add_audio_chunk_listener")
-
         self.client.add_audio_chunk_listener(self.on_audio_chunk)
 
         async def handle_incoming_connection(ws):
@@ -260,55 +241,44 @@ class SendspinServiceController:
     async def run(self):
         """Main execution loop."""
         await self.setup()
-        await self.proxy.start(self.client)
-
         monitor = xbmc.Monitor()
         while not monitor.abortRequested():
-                await asyncio.sleep(1)
+            await asyncio.sleep(1)
+        await self.cleanup()
 
     async def cleanup(self):
         """Clean shutdown."""
-        self.logger.info("Shutting down Sendspin service...")
+        self.engine.stop()
+        self.router.cleanup()
         await self.client.disconnect()
-        await self.proxy.stop()
+        self.logger.info("Shutting down Sendspin service...")
 
     def on_stream_start(self, message: StreamStartMessage):
         """Triggered when Sendspin starts a stream."""
-        self.logger.info("Stream Start received")
-        if message.payload.player:
-            self.logger.info(f"Stream Format: {message.payload.player.sample_rate} Hz, {message.payload.player.channels} channels, {message.payload.player.bit_depth} bit")
-            fmt = PCMFormat(
-                sample_rate=message.payload.player.sample_rate,
-                channels=message.payload.player.channels,
-                bit_depth=message.payload.player.bit_depth
-            )
-            self.buffer.set_format(fmt)
-        self.is_playing = False
+        self.logger.info(f"Stream Start Received")
+        self.logger.info(f"Sample Rate: {message.payload.player.sample_rate}, Channels: {message.payload.player.channels}, Bit Depth: {message.payload.player.bit_depth}")
+
+        virtual_sink = self.router.setup_routing()
+
+        self.engine.start(
+            rate = message.payload.player.sample_rate,
+            channels = message.payload.player.channels,
+            bit_depth = message.payload.player.bit_depth,
+            target_sink = virtual_sink
+        )
 
     def on_audio_chunk(self, server_timestamp_us: int, audio_data: bytes, audio_format):
-            self.buffer.put_audio(server_timestamp_us, audio_data, audio_format.pcm_format)
+        """Handles incoming audio data chunks."""
+        self.engine.play_chunk(audio_data)
 
-            if not self.is_playing and self.buffer._queue.qsize() >= 50:
-                self.is_playing = True
-                self.logger.info(f"Buffer primed, queue size {self.buffer._queue.qsize()}. Triggering Kodi player...")
-                stream_url = self.proxy.get_stream_url()
-                self.player.play_url(self.proxy.get_stream_url())
-                self.logger.info(f"Kodi player started with URL: {stream_url}")
 
     def on_stream_end(self, roles=None):
         """Triggered when stream ends."""
         self.logger.info("Stream End received")
-        self.player.stop()
-        self.buffer.clear()
-        self.is_playing = False
 
     def on_server_command(self, payload: ServerCommandPayload):
         """Handle Volume/Mute commands."""
         self.logger.debug("Server Command received")
-    
-    def on_kodi_player_stopped(self):
-        """Helper called by KodiPlayerManager when playback ends/stops."""
-        self.is_playing = False
 
 # --- Entry Point ---
 

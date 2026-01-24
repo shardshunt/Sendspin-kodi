@@ -10,9 +10,7 @@ This addon was developed with the assistance of AI.
 
 ## How it Works
 
-The service connects to a Sendspin server using a WebSocket connection. When an audio stream begins, the addon starts a local web server on your Kodi device. This server provides the incoming audio as a `.wav` stream.
-
-The addon then tells the Kodi player to play this local stream, effectively acting as a proxy for the Sendspin audio. This allows for seamless integration with Kodi's native player.
+TODO
 
 ## Installation
 
@@ -33,10 +31,35 @@ This will install the dependencies into the `service.sendspin/resources/lib` fol
 
 After the dependencies are downloaded, you need to create a zip file of the `service.sendspin` directory contents.
 
-
 Zip the `service.sendspin` directory.
 
-### 3. Install in Kodi
+### 3 . Ensure kodi is Using PulseAudio
+
+For this addon to mix audio correctly, Kodi must use the PulseAudio backend.
+1. Navigate to Settings > System > Audio.
+2. Check the Audio output device setting.
+3. Ensure the selected device name begins with PULSE: (e.g., PULSE: Default).
+
+#### Troubleshooting: No "PULSE" Devices Available
+
+If you only see devices starting with ALSA: and no PULSE: options are listed, Kodi likely has an exclusive lock on the hardware. Follow these steps to fix it:
+
+1. Connect via SSH to your LibreELEC device.
+2. Stop Kodi to release the hardware lock:
+```
+systemctl stop kodi
+```
+3. Force PulseAudio to detect your hardware modules:
+```
+pactl load-module module-udev-detect
+```
+4. Restart Kodi:
+```
+systemctl start kodi
+```
+5. Return to Settings > System > Audio in Kodi. You should now see a PULSE: device corresponding to your hardware. Select it to finish setup.
+
+### 4. Install in Kodi
 
 1.  Open Kodi.
 2.  Go to **Settings** (the gear icon).
@@ -46,18 +69,14 @@ Zip the `service.sendspin` directory.
 6.  Select the zip file to install it.
 7.  Wait for the "Add-on installed" notification.
 
-
 ## Configuration
 
 The addon can be configured through its settings in Kodi.
 
--   **Server WebSocket URL**: The address of the Sendspin server to connect to (e.g., `ws://192.168.1.100:8927/sendspin`).
--   **Local proxy port**: The local TCP port the addon will use for its internal web server (default is `59999`). You shouldn't need to change this unless it conflicts with another service.
 -   **Client ID**: A unique identifier for this Kodi client.
 -   **Client Name**: A friendly name to identify this client on the Sendspin server.
 -   **Log file path**: The location to store the addon's log file.
 -   **Startup error file**: A file to log any critical errors that happen when the service first starts.
-
 
 # Sendspin Kodi Service - Implementation TODO
 
