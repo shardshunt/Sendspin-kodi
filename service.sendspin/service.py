@@ -19,12 +19,13 @@ if ADDON_ROOT not in sys.path:
     sys.path.insert(0, ADDON_ROOT)
 
 # standard library imports
-import asyncio, logging, subprocess
-import xbmc, xbmcaddon
+import asyncio, logging, subprocess, struct
+import xbmc, xbmcgui, xbmcaddon
+from aiohttp import web
 
 # aiosendspin imports
 from aiosendspin.client import SendspinClient, PCMFormat, SendspinTimeFilter, ClientListener
-from aiosendspin.models.types import Roles, AudioCodec, PlayerCommand
+from aiosendspin.models.types import Roles, AudioCodec, PlayerCommand, UndefinedField
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.core import StreamStartMessage, ServerCommandPayload
 
@@ -113,17 +114,25 @@ class AudioRouter:
             self.null_sink_id = None
 
 
-class CLIPlaybackEngine:
+class SyncPlaybackEngine:
     """
     Handles audio playback by piping raw PCM data into the 'pacat' command.
     """
     def __init__(self):
         self.process = None
         self.logger = logging.getLogger("sendspin")
+        self._queue = asyncio.PriorityQueue()
+        self._worker_task = None
+        self._running = False
+        self.target_latency = 0.2 # Seconds
+
+    def set_time_provider(self, time_provider_func, sync_check_func):
+        """Link the engine to the Client's time filter."""
+        self.get_play_time = time_provider_func
+        self.is_synchronized = sync_check_func
 
     def start(self, rate, channels, bit_depth, target_sink):
         """Starts the pacat process targeting the specific sink."""
-        self.stop()
         fmt = f"s{bit_depth}le"
         cmd = [
             'pacat', 
@@ -135,39 +144,167 @@ class CLIPlaybackEngine:
             '--latency-msec=100',
             '--client-name=SendspinPlayer'
         ]
-        try:
-            self.process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
-            self.logger.info(f"started player with command{' '.join(cmd)}")
-        except Exception as e:
-            self.logger.info(f"exception staring aplay with: {' '.join(cmd)}. Exception: {e}")
 
-    def play_chunk(self, data):
+        self.logger.info(f"Starting Scheduled pacat: {' '.join(cmd)}")
+        self.process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        self._running = True
+        self._worker_task = asyncio.create_task(self._scheduler_loop())
+
+
+    def play_chunk(self, server_timestamp_us, data):
         """Writes a chunk of PCM data to the player process."""
-        if not self.process:
+        if not self.is_synchronized:
             return
-
-        # Check if pcat died silently
-        poll = self.process.poll()
-        if poll is not None:
-            err = self.process.stderr.read().decode().strip()
-            self.logger.info(f"[Sendspin] pacat died with code {poll}. Error: {err}")
-            self.stop()
-            return
-
-        try:
-            self.process.stdin.write(data)
-        except BrokenPipeError:
-            err = self.process.stderr.read().decode().strip()
-            self.logger.info(f"[Sendspin] pacat pipe broken: {err}")
-            self.stop()
+        
+        local_target_us = self.get_play_time(server_timestamp_us)
+        scheduled_time = (local_target_us / 1_000_000.0) + self.target_latency
+        self._queue.put_nowait((scheduled_time, data))
+    
+    async def _scheduler_loop(self):
+        """The 'Metronome' loop that releases audio to the pipe."""
+        while self._running:
+            try:
+                # Peek at the next chunk
+                scheduled_time, data = await self._queue.get()
+                
+                # How long until this chunk is due?
+                # loop.time() is the reference for the TimeFilter's T_client
+                now = asyncio.get_event_loop().time()
+                wait_time = scheduled_time - now
+                
+                if wait_time > 0:
+                    # Sleep until the exact micro-moment it's due
+                    await asyncio.sleep(wait_time)
+                
+                # Release to the PulseAudio pipe
+                if self.process and self.process.stdin:
+                    try:
+                        self.process.stdin.write(data)
+                        self.process.stdin.flush()
+                    except (BrokenPipeError, AttributeError):
+                        self.logger.error("pacat pipe broken.")
+                        self.process = None
+                        break
+                
+                self._queue.task_done()
+            except Exception as e:
+                self.logger.error(f"Scheduler error: {e}")
+                await asyncio.sleep(0.01)
 
     def stop(self):
         """Terminates the playback process."""
+        self._running = False
+        if self._worker_task:
+            self._worker_task.cancel()
         if self.process:
-            self.logger.info("stopping playback engine")
             self.process.terminate()
             self.process = None
+        # Flush queue
+        while not self._queue.empty():
+            self._queue.get_nowait()
 
+class KodiMetadataHandler:
+    def __init__(self):
+        self.player = xbmc.Player()
+        self.active_item = None
+        self.logger = logging.getLogger("sendspin")
+
+    def update_metadata(self, title="Sendspin Stream", artist="Remote Source", album="", thumb=""):
+        """Creates or updates the Kodi UI with current track info."""
+        # 1. Create the list item
+        list_item = xbmcgui.ListItem(title)
+        
+        # 2. Set Music Info
+        info_tag = list_item.getMusicInfoTag()
+        info_tag.setTitle(title)
+        info_tag.setArtist(artist)
+        if album:
+            info_tag.setAlbum(album)
+        
+        # 3. Set Art
+        if thumb:
+            list_item.setArt({'thumb': thumb})
+        else:
+            # Fallback to addon icon
+            addon_path = xbmcaddon.Addon().getAddonInfo('path')
+            icon = os.path.join(addon_path, 'icon.png')
+            list_item.setArt({'thumb': icon})
+
+        self.active_item = list_item
+
+        # 4. Trigger "Playback" to show the UI
+        # We use a dummy URL. 'special://temp/dummy.mp3' works well as a placeholder.
+        # This makes Kodi think it's playing, which opens the Music Viz / Now Playing screen.
+        
+        self.logger.info("Starting dummy playback for UI")
+        self.player.play("http://localhost:9999/sendspin_dummy", list_item)
+        self.player.updateInfoTag(list_item)
+
+    def stop(self):
+        """Stops the Kodi UI player."""
+        if self.player.isPlaying():
+            self.player.stop()
+
+class DummyStreamServer:
+    def __init__(self, port=9999):
+        self.port = port
+        self.runner = None
+        self.logger = logging.getLogger("sendspin")
+
+    def _create_wav_header(self, sample_rate=11025, channels=1, bits=16):
+        """Generates a standard WAV header with 'infinite' length."""
+
+        header = b'RIFF'
+        header += struct.pack('<I', 0xFFFFFFFF)  # Chunk size (max 32-bit int for streaming)
+        header += b'WAVE'
+        header += b'fmt '
+        header += struct.pack('<I', 16)  # PCM chunk size
+        header += struct.pack('<H', 1)   # Audio Format (1 = PCM)
+        header += struct.pack('<H', channels)
+        header += struct.pack('<I', sample_rate)
+        header += struct.pack('<I', sample_rate * channels * bits // 8) # Byte rate
+        header += struct.pack('<H', channels * bits // 8) # Block align
+        header += struct.pack('<H', bits) # Bits per sample
+        header += b'data'
+        header += struct.pack('<I', 0xFFFFFFFF) # Data size (max 32-bit int)
+        
+        return header
+
+    async def handle_dummy_audio(self, request):
+        """Returns an infinite stream of silent PCM data."""
+        response = web.StreamResponse(
+            status=200,
+            reason='OK',
+            headers={'Content-Type': 'audio/basic'} # or audio/l16
+        )
+        await response.prepare(request)
+
+        try:
+            # 1. Send the WAV Header first
+            header = self._create_wav_header()
+            await response.write(header)
+            
+            # 2. Send silence continuously
+            silence = b'\x00' * (11025 * 2 * 2)
+            while True:
+                await response.write(silence)
+                await asyncio.sleep(0.02) 
+        except (ConnectionResetError, asyncio.CancelledError):
+            self.logger
+            pass
+        return response
+
+    async def start(self):
+        app = web.Application()
+        app.router.add_get('/sendspin_dummy', self.handle_dummy_audio)
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, '127.0.0.1', self.port)
+        await site.start()
+
+    async def stop(self):
+        if self.runner:
+            await self.runner.cleanup()
 
 class SendspinServiceController:
     """
@@ -179,13 +316,16 @@ class SendspinServiceController:
     def __init__(self):
         self.logger = logging.getLogger("sendspin")
         self.addon = xbmcaddon.Addon()
-        self.engine = CLIPlaybackEngine()
+        self.engine = SyncPlaybackEngine()
         self.router = AudioRouter()
+        self.kodi_ui = KodiMetadataHandler()
+        self.dummy_server = DummyStreamServer()
         self.client: SendspinClient = None
-        self.sample_rate = 48000
+        self.sample_rate_max = 48000
         self.channels = 2
         self.bit_depth = 16
-        self.buffer_bytes = int((BUFFERSIZE_REQUEST_MS / 1000.0) * self.sample_rate * self.channels * (self.bit_depth // 8))
+        self.buffer_bytes = int((BUFFERSIZE_REQUEST_MS / 1000.0) * self.sample_rate_max * self.channels * (self.bit_depth // 8))
+        self.is_playing = False
     
     async def setup(self):
         """Registers listeners and starts the Client Listener."""
@@ -198,6 +338,12 @@ class SendspinServiceController:
                     channels=2,
                     sample_rate=48000,
                     bit_depth=16,
+                ),
+                SupportedAudioFormat(
+                    AudioCodec.PCM,
+                    channels=2,
+                    sample_rate=44100,
+                    bit_depth=16,
                 )
             ],
             buffer_capacity = self.buffer_bytes,
@@ -208,15 +354,21 @@ class SendspinServiceController:
         self.client = SendspinClient(
             client_id=CLIENT_ID,
             client_name=CLIENT_NAME,
-            roles=[Roles.PLAYER],
+            roles=[Roles.PLAYER, Roles.METADATA],
             player_support=self.player_support,
-            static_delay_ms=100,
+            static_delay_ms=0,
+        )
+
+        self.engine.set_time_provider(
+            self.client.compute_play_time, 
+            self.client.is_time_synchronized
         )
 
         handlers = {
             "add_stream_start_listener": self.on_stream_start,
             "add_stream_end_listener": self.on_stream_end,
             "add_server_command_listener": self.on_server_command,
+            "add_metadata_listener": self.on_metadata_update,
         }
         logger.setup_client_listeners(self.client, handlers, log=self.logger, mode="all",exclude="add_audio_chunk_listener")
         self.client.add_audio_chunk_listener(self.on_audio_chunk)
@@ -240,6 +392,7 @@ class SendspinServiceController:
 
     async def run(self):
         """Main execution loop."""
+        await self.dummy_server.start()
         await self.setup()
         monitor = xbmc.Monitor()
         while not monitor.abortRequested():
@@ -257,6 +410,7 @@ class SendspinServiceController:
         """Triggered when Sendspin starts a stream."""
         self.logger.info(f"Stream Start Received")
         self.logger.info(f"Sample Rate: {message.payload.player.sample_rate}, Channels: {message.payload.player.channels}, Bit Depth: {message.payload.player.bit_depth}")
+        self.is_playing = True
 
         virtual_sink = self.router.setup_routing()
 
@@ -269,11 +423,26 @@ class SendspinServiceController:
 
     def on_audio_chunk(self, server_timestamp_us: int, audio_data: bytes, audio_format):
         """Handles incoming audio data chunks."""
-        self.engine.play_chunk(audio_data)
+        self.engine.play_chunk(server_timestamp_us, audio_data)
+    
+    def on_metadata_update(self, payload):
+        """Called when track info (Artist/Title/Art) changes."""
+        metadata = getattr(payload, 'metadata', {})
+
+        title = getattr(metadata, 'title', 'Unknown')
+        artist = getattr(metadata, 'artist', 'Unknown')
+        thumb = getattr(metadata, 'artwork_url', '')
+        
+        self.logger.info(f"Metadata Update: {artist} - {title}")
+        if isinstance(title, str) and isinstance(artist, str) and self.is_playing:
+            self.kodi_ui.update_metadata(title=title, artist=artist, thumb=thumb)
 
 
     def on_stream_end(self, roles=None):
         """Triggered when stream ends."""
+        self.is_playing = False
+        self.kodi_ui.stop()
+        self.engine.stop()
         self.logger.info("Stream End received")
 
     def on_server_command(self, payload: ServerCommandPayload):
