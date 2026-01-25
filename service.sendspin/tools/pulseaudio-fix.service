@@ -1,0 +1,16 @@
+# place in /storage/.config/system.d/pulseaudio-fix.service
+[Unit]
+Description=Wait for PulseAudio sinks before starting Kodi
+After=pulseaudio.service
+Before=kodi.service
+Wants=pulseaudio.service
+Wants=kodi.service
+
+[Service]
+Type=oneshot
+ExecStart=/storage/.config/pulseaudio-fix/wait-for-pulse-sink.sh
+TimeoutStartSec=120
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
