@@ -238,7 +238,6 @@ class KodiMetadataHandler:
         
         self.logger.info("Starting dummy playback for UI")
         self.player.play("http://localhost:9999/sendspin_dummy", list_item)
-        self.player.updateInfoTag(list_item)
 
     def stop(self):
         """Stops the Kodi UI player."""
@@ -251,9 +250,8 @@ class DummyStreamServer:
         self.runner = None
         self.logger = logging.getLogger("sendspin")
 
-    def _create_wav_header(self, sample_rate=11025, channels=1, bits=16):
+    def _create_wav_header(self, sample_rate=44100, channels=2, bits=16):
         """Generates a standard WAV header with 'infinite' length."""
-
         header = b'RIFF'
         header += struct.pack('<I', 0xFFFFFFFF)  # Chunk size (max 32-bit int for streaming)
         header += b'WAVE'
@@ -285,12 +283,11 @@ class DummyStreamServer:
             await response.write(header)
             
             # 2. Send silence continuously
-            silence = b'\x00' * (11025 * 2 * 2)
+            silence = b'\x00' * (44100 * 2 * 2 ) # 1 second of silence at 44.1kHz, 16-bit, stereo
             while True:
                 await response.write(silence)
-                await asyncio.sleep(0.02) 
-        except (ConnectionResetError, asyncio.CancelledError):
-            self.logger
+                await asyncio.sleep(0.01) 
+        except (ConnectionResetError, ConnectionError, BrokenPipeError, asyncio.CancelledError):
             pass
         return response
 
@@ -333,12 +330,12 @@ class SendspinServiceController:
         #define capabilities
         self.player_support = ClientHelloPlayerSupport(
             supported_formats = [ 
-                SupportedAudioFormat(
-                    AudioCodec.PCM,
-                    channels=2,
-                    sample_rate=48000,
-                    bit_depth=16,
-                ),
+                # SupportedAudioFormat(
+                #     AudioCodec.PCM,
+                #     channels=2,
+                #     sample_rate=48000,
+                #     bit_depth=16,
+                # ),
                 SupportedAudioFormat(
                     AudioCodec.PCM,
                     channels=2,
@@ -435,7 +432,7 @@ class SendspinServiceController:
         
         self.logger.info(f"Metadata Update: {artist} - {title}")
         if isinstance(title, str) and isinstance(artist, str) and self.is_playing:
-            self.kodi_ui.update_metadata(title=title, artist=artist, thumb=thumb)
+            self.kodi_ui.update_metadata(title="Sendspin Stream", artist="Sendspin Stream")
 
 
     def on_stream_end(self, roles=None):
