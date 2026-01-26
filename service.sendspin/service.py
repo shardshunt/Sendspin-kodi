@@ -21,13 +21,14 @@ if ADDON_ROOT not in sys.path:
 # standard library imports
 import asyncio, logging, subprocess, struct
 import xbmc, xbmcgui, xbmcaddon
+from audio import AudioRouter, SyncPlaybackEngine
 from aiohttp import web
 
 # aiosendspin imports
-from aiosendspin.client import SendspinClient, PCMFormat, SendspinTimeFilter, ClientListener
-from aiosendspin.models.types import Roles, AudioCodec, PlayerCommand, UndefinedField
+from aiosendspin.client import SendspinClient, ClientListener
+from aiosendspin.models.types import Roles, AudioCodec, PlayerCommand, UndefinedField, PlaybackStateType, PlayerStateType
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.core import StreamStartMessage, ServerCommandPayload
+from aiosendspin.models.core import StreamStartMessage, ServerCommandPayload, ServerStatePayload
 
 # Throttled logger for debug
 import logger
@@ -48,160 +49,10 @@ throttledLog = ThrottledLogger(1)
 
 CLIENT_ID = xbmcaddon.Addon().getSetting("client_id") or "kodi-sendspin-client"
 CLIENT_NAME = "Kodi"
-BUFFERSIZE_REQUEST_MS = 5000 # 5 seconds
+BUFFERSIZE_REQUEST_MS = 2000 # 3 seconds
+SINK_LATENCY_MS = 50 # 50ms * 3 = 150ms total buffer
 
-class AudioRouter:
-    """
-    Manages PulseAudio modules to ensure audio routing works correctly.
-    
-    It creates a virtual Null Sink ('Sendspin_Sink') and loops it back 
-    to the physical hardware. This allows Sendspin to play audio even 
-    if Kodi holds a lock on the hardware device, as PulseAudio handles 
-    the mixing.
-    """
-    def __init__(self):
-        self.sink_name = "Sendspin_Sink"
-        self.loopback_id = None
-        self.null_sink_id = None
-        self.logger = logging.getLogger("sendspin")
-
-    def _run_pactl(self, args):
-        try:
-            result = subprocess.run(['pactl'] + args, capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except Exception as e:
-            self.logger.info(f"[Sendspin] pactl error: {e}",)
-        return None
-
-    def setup_routing(self):
-        """Creates a virtual sink and loops it to hardware."""
-        if not self.null_sink_id:
-            cmd = ['load-module', 'module-null-sink', f'sink_name={self.sink_name}', 'sink_properties=device.description=Sendspin_Virtual_Cable']
-            self.null_sink_id = self._run_pactl(cmd)
-
-
-        hw_sink = self.get_hardware_sink()
-
-        if hw_sink and not self.loopback_id:
-            loop_cmd = [
-                'load-module', 'module-loopback',
-                f'source={self.sink_name}.monitor',
-                f'sink={hw_sink}',
-                'latency_msec=100'
-            ]
-            self.loopback_id = self._run_pactl(loop_cmd)
-            self.logger.info(f"Routing {self.sink_name} -> {hw_sink}")
-            
-        return self.sink_name
-
-    def get_hardware_sink(self):
-        """Finds the actual alsa_output sink, ignoring virtual devices."""
-        out = self._run_pactl(['list', 'sinks', 'short'])
-        if out:
-            for line in out.split('\n'):
-                if "alsa_output" in line:
-                    return line.split('\t')[1]
-        return "@DEFAULT_SINK@"
-
-    def cleanup(self):
-        """Clean up modules to prevent PulseAudio from getting cluttered."""
-        if self.loopback_id:
-            self._run_pactl(['unload-module', self.loopback_id])
-            self.loopback_id = None
-        if self.null_sink_id:
-            self._run_pactl(['unload-module', self.null_sink_id])
-            self.null_sink_id = None
-
-
-class SyncPlaybackEngine:
-    """
-    Handles audio playback by piping raw PCM data into the 'pacat' command.
-    """
-    def __init__(self):
-        self.process = None
-        self.logger = logging.getLogger("sendspin")
-        self._queue = asyncio.PriorityQueue()
-        self._worker_task = None
-        self._running = False
-        self.target_latency = 0.2 # Seconds
-
-    def set_time_provider(self, time_provider_func, sync_check_func):
-        """Link the engine to the Client's time filter."""
-        self.get_play_time = time_provider_func
-        self.is_synchronized = sync_check_func
-
-    def start(self, rate, channels, bit_depth, target_sink):
-        """Starts the pacat process targeting the specific sink."""
-        fmt = f"s{bit_depth}le"
-        cmd = [
-            'pacat', 
-            '--playback',
-            '--device', target_sink,
-            '--format', fmt, 
-            '--rate', str(rate), 
-            '--channels', str(channels),
-            '--latency-msec=100',
-            '--client-name=SendspinPlayer'
-        ]
-
-        self.logger.info(f"Starting Scheduled pacat: {' '.join(cmd)}")
-        self.process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
-        self._running = True
-        self._worker_task = asyncio.create_task(self._scheduler_loop())
-
-
-    def play_chunk(self, server_timestamp_us, data):
-        """Writes a chunk of PCM data to the player process."""
-        if not self.is_synchronized:
-            return
-        
-        local_target_us = self.get_play_time(server_timestamp_us)
-        scheduled_time = (local_target_us / 1_000_000.0) + self.target_latency
-        self._queue.put_nowait((scheduled_time, data))
-    
-    async def _scheduler_loop(self):
-        """The 'Metronome' loop that releases audio to the pipe."""
-        while self._running:
-            try:
-                # Peek at the next chunk
-                scheduled_time, data = await self._queue.get()
-                
-                # How long until this chunk is due?
-                # loop.time() is the reference for the TimeFilter's T_client
-                now = asyncio.get_event_loop().time()
-                wait_time = scheduled_time - now
-                
-                if wait_time > 0:
-                    # Sleep until the exact micro-moment it's due
-                    await asyncio.sleep(wait_time)
-                
-                # Release to the PulseAudio pipe
-                if self.process and self.process.stdin:
-                    try:
-                        self.process.stdin.write(data)
-                        self.process.stdin.flush()
-                    except (BrokenPipeError, AttributeError):
-                        self.logger.error("pacat pipe broken.")
-                        self.process = None
-                        break
-                
-                self._queue.task_done()
-            except Exception as e:
-                self.logger.error(f"Scheduler error: {e}")
-                await asyncio.sleep(0.01)
-
-    def stop(self):
-        """Terminates the playback process."""
-        self._running = False
-        if self._worker_task:
-            self._worker_task.cancel()
-        if self.process:
-            self.process.terminate()
-            self.process = None
-        # Flush queue
-        while not self._queue.empty():
-            self._queue.get_nowait()
+# --- MAIN CLASSES ---
 
 class KodiMetadataHandler:
     def __init__(self):
@@ -218,8 +69,6 @@ class KodiMetadataHandler:
         info_tag = list_item.getMusicInfoTag()
         info_tag.setTitle(title)
         info_tag.setArtist(artist)
-        if album:
-            info_tag.setAlbum(album)
         
         # 3. Set Art
         if thumb:
@@ -235,9 +84,9 @@ class KodiMetadataHandler:
         # 4. Trigger "Playback" to show the UI
         # We use a dummy URL. 'special://temp/dummy.mp3' works well as a placeholder.
         # This makes Kodi think it's playing, which opens the Music Viz / Now Playing screen.
-        
-        self.logger.info("Starting dummy playback for UI")
-        self.player.play("http://localhost:9999/sendspin_dummy", list_item)
+        if not self.player.isPlaying():
+            self.logger.info("Starting dummy playback for UI")
+            self.player.play("http://localhost:9999/sendspin_dummy", list_item)
 
     def stop(self):
         """Stops the Kodi UI player."""
@@ -283,7 +132,7 @@ class DummyStreamServer:
             await response.write(header)
             
             # 2. Send silence continuously
-            silence = b'\x00' * (44100 * 2 * 2 ) # 1 second of silence at 44.1kHz, 16-bit, stereo
+            silence = b'\x00' * (44100 * 2 * 2 *2 ) # 2 seconds of silence at 44.1kHz, 16-bit, stereo
             while True:
                 await response.write(silence)
                 await asyncio.sleep(0.01) 
@@ -323,6 +172,7 @@ class SendspinServiceController:
         self.bit_depth = 16
         self.buffer_bytes = int((BUFFERSIZE_REQUEST_MS / 1000.0) * self.sample_rate_max * self.channels * (self.bit_depth // 8))
         self.is_playing = False
+        self.player_state = PlaybackStateType.STOPPED
     
     async def setup(self):
         """Registers listeners and starts the Client Listener."""
@@ -344,7 +194,7 @@ class SendspinServiceController:
                 )
             ],
             buffer_capacity = self.buffer_bytes,
-            supported_commands= [ PlayerCommand.VOLUME, PlayerCommand.MUTE ],
+            supported_commands= [ PlayerCommand.VOLUME ],
         )
 
         #initialize client
@@ -353,7 +203,7 @@ class SendspinServiceController:
             client_name=CLIENT_NAME,
             roles=[Roles.PLAYER, Roles.METADATA],
             player_support=self.player_support,
-            static_delay_ms=0,
+            static_delay_ms=-150,
         )
 
         self.engine.set_time_provider(
@@ -410,19 +260,21 @@ class SendspinServiceController:
         self.is_playing = True
 
         virtual_sink = self.router.setup_routing()
-
         self.engine.start(
             rate = message.payload.player.sample_rate,
             channels = message.payload.player.channels,
             bit_depth = message.payload.player.bit_depth,
             target_sink = virtual_sink
         )
+        self.player_state = PlaybackStateType.PLAYING
+        self.engine.set_volume(50)
+        asyncio.create_task(self.client.send_player_state(state=PlayerStateType.SYNCHRONIZED, volume=50, muted=False))
 
     def on_audio_chunk(self, server_timestamp_us: int, audio_data: bytes, audio_format):
         """Handles incoming audio data chunks."""
         self.engine.play_chunk(server_timestamp_us, audio_data)
     
-    def on_metadata_update(self, payload):
+    def on_metadata_update(self, payload: ServerStatePayload):
         """Called when track info (Artist/Title/Art) changes."""
         metadata = getattr(payload, 'metadata', {})
 
@@ -434,17 +286,37 @@ class SendspinServiceController:
         if isinstance(title, str) and isinstance(artist, str) and self.is_playing:
             self.kodi_ui.update_metadata(title="Sendspin Stream", artist="Sendspin Stream")
 
-
     def on_stream_end(self, roles=None):
         """Triggered when stream ends."""
-        self.is_playing = False
-        self.kodi_ui.stop()
-        self.engine.stop()
         self.logger.info("Stream End received")
+        self.is_playing = False
+        self.player_state = PlaybackStateType.STOPPED
+        asyncio.create_task(self._async_stop_sequence())
+    
+    async def _async_stop_sequence(self):
+        self.kodi_ui.stop()
+        await asyncio.sleep(4)
+        self.engine.stop()
 
     def on_server_command(self, payload: ServerCommandPayload):
-        """Handle Volume/Mute commands."""
-        self.logger.debug("Server Command received")
+        """Handle Volume/Mute commands from the Sendspin server."""
+        command_data = getattr(payload, 'player', None)
+        self.logger.debug(f"Server Command received: {command_data.command}")
+
+        try:
+            # Command is 'player.volume', payload has 'player.volume' integer (0-100)
+            if command_data.command == PlayerCommand.VOLUME:
+                # getattr is safe if the attribute is missing, defaulting to None
+                vol = getattr(command_data, 'volume', None)
+                if vol is not None:
+                    self.engine.set_volume(vol)
+                else:
+                    self.logger.warning("Received VOLUME command but payload.volume is None")
+            else:
+                self.logger.debug(f"Ignored unhandled command: {command_data.command}")
+
+        except Exception as e:
+            self.logger.error(f"Error handling server command: {e}")
 
 # --- Entry Point ---
 
