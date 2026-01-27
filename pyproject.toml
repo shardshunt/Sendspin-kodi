@@ -19,3 +19,47 @@ dev = [
     "pre-commit>=4.5.1",
     "ruff>=0.14.14",
 ]
+
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+extend-select = [
+  "E",       # pycodestyle (error)
+  "W",       # pycodestyle (warning)
+  "F",       # pyflakes
+  "B",       # flake8-bugbear
+  "I",       # isort
+  "N",       # pep8-naming
+  "PIE",     # flake8-pie
+  "PLE",     # pylint error
+  "RUF100",  # Unused noqa comments
+  "PGH004",  # blanket noqa comments
+  "UP",      # pyupgrade
+  "C4",      # flake8-comprehensions
+  "SIM101",  # merge duplicate isinstance calls
+  "SIM201", "SIM202", "SIM222", "SIM223",  # flake8-simplify
+  "FURB168", # Prefer is operator over isinstance for None checks
+  "FURB169", # Do not use is comparison with type(None). Use None
+  "FURB187", # avoid list reverse copy
+  "FURB188", # use str.remove(pre|suf)fix
+  "ISC001",  # implicitly concatenated string
+  "RET501", "RET502",  # better return None handling
+]
+
+ignore = [
+  "E2",     # conflicts with black
+  "E501",   # conflicts with black
+  "E731",   # Do not assign a `lambda` expression, use a `def`
+  "E741",   # Ambiguous variable name
+  "C409",   # https://github.com/astral-sh/ruff/issues/12912
+  "C420",   # reads a little worse. fromkeys predates dict comprehensions
+  "C416",   # There are a few cases where it's nice to have names for the dict items
+  "PIE790", # there's nothing wrong with pass
+]
+
+unfixable = [
+  "SIM222", # automatic fix might obscure issue
+  "SIM223", # automatic fix might obscure issue
+]
