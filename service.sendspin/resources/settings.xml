@@ -11,7 +11,7 @@
 
     <category label="Client">
         <setting id="client_id" type="text" label="Client ID" default="kodi-sendspin-client" />
-        <setting id="client_name" type="text" label="Client Name" default="Kodi Room" />
+        <setting id="client_name_" type="text" label="Client Name" default="Kodi" />
     </category>
 
     <category label="Logging">

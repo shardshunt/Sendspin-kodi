@@ -10,9 +10,7 @@ This addon was developed with the assistance of AI.
 
 ## How it Works
 
-The service connects to a Sendspin server using a WebSocket connection. When an audio stream begins, the addon starts a local web server on your Kodi device. This server provides the incoming audio as a `.wav` stream.
-
-The addon then tells the Kodi player to play this local stream, effectively acting as a proxy for the Sendspin audio. This allows for seamless integration with Kodi's native player.
+TODO
 
 ## Installation
 
@@ -22,9 +20,8 @@ The addon requires several Python libraries to function. A helper script is incl
 
 **Prerequisites:** You must have `Python 3.11` and `pip` installed on your system.
 
-
 Run the script:
-```
+```sh
 python3 /service.sendspin/tools/get_libs.py
 ```
 This will install the dependencies into the `service.sendspin/resources/lib` folder.
@@ -33,10 +30,38 @@ This will install the dependencies into the `service.sendspin/resources/lib` fol
 
 After the dependencies are downloaded, you need to create a zip file of the `service.sendspin` directory contents.
 
-
 Zip the `service.sendspin` directory.
 
-### 3. Install in Kodi
+### 3 . Ensure kodi is Using PulseAudio
+
+For this addon to mix audio correctly, Kodi must use the PulseAudio backend.
+1. Navigate to Settings > System > Audio.
+2. Check the Audio output device setting.
+3. Ensure the selected device name begins with PULSE: (e.g., PULSE: Default).
+
+#### fix no pulse audio for libreElec
+
+1. Create directories and upload the script and service files:
+```sh
+mkdir -p /storage/.config/pulseaudio-fix
+```
+2. Place the script at `/storage/.config/pulseaudio-fix/wait-for-pulse-sink.sh` 
+3. Place the unit at `/storage/.config/system.d/pulseaudio-fix.service`.
+4. Make the script executable:
+```sh
+chmod +x /storage/.config/pulseaudio-fix/wait-for-pulse-sink.sh
+```
+5. Reload systemd daemon and enable the service:
+```sh
+systemctl daemon-reload
+systemctl enable pulseaudio-fix.service
+```
+6. Reboot the device to test full boot ordering:
+```sh
+reboot
+```
+
+### 4. Install in Kodi
 
 1.  Open Kodi.
 2.  Go to **Settings** (the gear icon).
@@ -46,24 +71,11 @@ Zip the `service.sendspin` directory.
 6.  Select the zip file to install it.
 7.  Wait for the "Add-on installed" notification.
 
-
 ## Configuration
 
 The addon can be configured through its settings in Kodi.
 
--   **Server WebSocket URL**: The address of the Sendspin server to connect to (e.g., `ws://192.168.1.100:8927/sendspin`).
--   **Local proxy port**: The local TCP port the addon will use for its internal web server (default is `59999`). You shouldn't need to change this unless it conflicts with another service.
 -   **Client ID**: A unique identifier for this Kodi client.
 -   **Client Name**: A friendly name to identify this client on the Sendspin server.
 -   **Log file path**: The location to store the addon's log file.
 -   **Startup error file**: A file to log any critical errors that happen when the service first starts.
-
-
-# Sendspin Kodi Service - Implementation TODO
-
-- [ ] **Handle Stream End**: Create an `on_stream_end` method in `AudioProxy` to stop Kodi playback when a `stream/end` message is received. Register it with `set_stream_end_listener`.
-- [ ] **Handle Stream Clear**: Create an `on_stream_clear` method to handle buffer clearing (e.g., on seek). This should stop or restart playback. Register it with `set_stream_clear_listener`.
-- [ ] **Handle Server Commands**: Create an `on_server_command` method to process direct commands from the server (e.g., volume/mute). Register it with `set_server_command_listener`.
-- [ ] **Handle Disconnection**: Create an `on_disconnect` method to clean up the player state immediately when the connection is lost. Register it with `set_disconnect_listener`.
-- [ ] **Handle Group Updates**: Create an `on_group_update` method to manage multi-room synchronization events. Start by logging the event data. Register it with `set_group_update_listener`.
-- [ ] **Review Existing TODOs**: Address the `TODO` comments in `on_stream_start` and `on_controller_state` to improve the existing handlers.

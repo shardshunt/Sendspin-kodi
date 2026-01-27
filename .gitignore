@@ -19,6 +19,8 @@ service.sendspin/resources/lib/
 upload
 sendspin-protocol.txt
 KodiDevelopment.html
+log.txt
+Plan.txt
 
 # Common Python / editor ignores
 __pycache__/
