@@ -1,0 +1,21 @@
+[project]
+name = "sendspin-kodi"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = "~=3.11.0"
+dependencies = [
+    "aiohttp>=3.13.3",
+    "av==14.2.0",
+    "mashumaro>=3.17",
+    "numpy>=2.4.1",
+    "orjson>=3.11.5",
+    "pillow>=12.1.0",
+    "zeroconf>=0.148.0",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.1",
+    "ruff>=0.14.14",
+]
