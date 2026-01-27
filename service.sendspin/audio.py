@@ -2,7 +2,6 @@ import logging
 import subprocess
 import asyncio
 import numpy as np
-from aiosendspin.models.types import ClientStateType
 
 class AudioRouter:
     """
@@ -116,7 +115,6 @@ class SyncPlaybackEngine:
             volume_int (int): Volume level from 0 to 100.
         """
         self._volume = max(0, min(100, int(volume_int)))
-        self.logger.debug(f"Software volume: {self._volume}%")
 
     def set_mute(self, is_muted):
         """
