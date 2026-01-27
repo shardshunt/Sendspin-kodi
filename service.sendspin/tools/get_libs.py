@@ -10,16 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-
-PACKAGES = [
-    "aiohttp",
-    "mashumaro",
-    "zeroconf",
-    "pillow",
-    "orjson",
-    "av==14.2.0",
-    "numpy"
-]
+PACKAGES = ["aiohttp", "mashumaro", "zeroconf", "pillow", "orjson", "av==14.2.0", "numpy"]
 
 AIOSENDSPIN_PKG = "aiosendspin==3.0.0"
 

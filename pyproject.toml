@@ -57,6 +57,7 @@ ignore = [
   "C420",   # reads a little worse. fromkeys predates dict comprehensions
   "C416",   # There are a few cases where it's nice to have names for the dict items
   "PIE790", # there's nothing wrong with pass
+  "UP038",
 ]
 
 unfixable = [
