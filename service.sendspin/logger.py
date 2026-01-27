@@ -14,9 +14,11 @@ Centralised logging and diagnostic helpers for the Sendspin service.
 from __future__ import annotations
 
 import logging
-import xbmc
+from typing import Any
+
 import xbmcaddon
-from typing import Any, Optional
+
+import xbmc
 
 # Limits for truncation when generating fallback representations
 _TRUNC_URL = 20
@@ -76,7 +78,7 @@ def _truncate_url(url: Any, max_len: int = _TRUNC_URL) -> str:
         return "<bad-url>"
 
 
-def _truncate_repr(s: Optional[str], max_len: int = _TRUNC_REPR) -> str:
+def _truncate_repr(s: str | None, max_len: int = _TRUNC_REPR) -> str:
     """Truncates object strings to a safe maximum length."""
     if s is None:
         return "None"
@@ -106,8 +108,7 @@ def _deep_clean_payload(obj: Any) -> Any:
             return enum_val
 
         if isinstance(obj, dict):
-            return {k: _deep_clean_payload(v) for k, v in obj.items() 
-                    if type(v).__name__ != "UndefinedField"}
+            return {k: _deep_clean_payload(v) for k, v in obj.items() if type(v).__name__ != "UndefinedField"}
 
         if isinstance(obj, (list, tuple, set)):
             return [_deep_clean_payload(v) for v in obj if type(v).__name__ != "UndefinedField"]
@@ -116,7 +117,7 @@ def _deep_clean_payload(obj: Any) -> Any:
             data = {}
             for k, v in vars(obj).items():
                 # Skip private attributes and UndefinedFields
-                if k.startswith('_') or type(v).__name__ == "UndefinedField":
+                if k.startswith("_") or type(v).__name__ == "UndefinedField":
                     continue
                 if k in ("artwork_url", "art", "artwork", "image_url"):
                     data[k] = _truncate_url(v)
@@ -132,11 +133,11 @@ def _deep_clean_payload(obj: Any) -> Any:
 # --- Payload detail extraction --------------------------------
 
 
-def _try_enum_or_name(val: Any) -> Optional[str]:
+def _try_enum_or_name(val: Any) -> str | None:
     """Extracts a string name from Enum or Class-based constants."""
     try:
         if hasattr(val, "name"):
-            return str(getattr(val, "name"))
+            return str(val.name)
     except Exception:
         pass
     return None
@@ -146,7 +147,7 @@ def _format_payload_pretty(payload: Any, indent_level: int = 1) -> str:
     """Formats a payload into a multi-line string with grouped duplicates and indentation."""
     try:
         cleaned = _deep_clean_payload(payload)
-        
+
         # If the result isn't a dictionary (like a single string or number), return it simply
         if not isinstance(cleaned, dict):
             return f"\n  - {cleaned}"
@@ -162,13 +163,14 @@ def _format_payload_pretty(payload: Any, indent_level: int = 1) -> str:
         for v_str, keys in val_map.items():
             key_label = ", ".join(keys)
             lines.append(f"{base_indent}{key_label}: {v_str}")
-        
+
         return "\n" + "\n".join(lines)
     except Exception:
         return " <pretty-format-failed>"
 
 
 # --- Listener Setup ------------------------------------------------
+
 
 def _internal_log(log: logging.Logger, label: str, name: str, payload: Any):
     """Formats and writes listener event data to the active loggers."""
@@ -182,12 +184,13 @@ def _internal_log(log: logging.Logger, label: str, name: str, payload: Any):
     except Exception:
         pass
 
+
 def setup_client_listeners(
-    client: object, 
-    handlers: dict[str, callable], 
-    log: Optional[logging.Logger] = None,
+    client: object,
+    handlers: dict[str, callable],
+    log: logging.Logger | None = None,
     mode: str = "unhandled",
-    exclude: Optional[set[str]] = None
+    exclude: set[str] | None = None,
 ):
     """
     Inspects the client for available 'add_*_listener' methods.
@@ -197,7 +200,7 @@ def setup_client_listeners(
     """
     if log is None:
         log = logging.getLogger("sendspin")
-    
+
     mode = mode.lower()
     exclude = exclude or set()
 
@@ -210,7 +213,7 @@ def setup_client_listeners(
 
         user_handler = handlers.get(attr)
         is_handled = user_handler is not None
-        
+
         # 2. Determine if we should attach based on ATTACH_MODE
         should_attach_auto = (mode == "all") or (mode == "unhandled" and not is_handled)
 
@@ -224,7 +227,7 @@ def setup_client_listeners(
 
             label = "[HANDLED]\n" if is_handled else "[UNHANDLED]"
 
-            def make_final_handler(name: str, callback: Optional[callable], lbl: str):
+            def make_final_handler(name: str, callback: callable | None, lbl: str):
                 def _unified_callback(payload: Any = None, *a, **kw):
                     result = None
                     # A) Execute your service logic first (e.g., on_metadata)
@@ -234,12 +237,13 @@ def setup_client_listeners(
                         except Exception:
                             # Catch but log exceptions so the service keeps running
                             log.exception("User handler for %s failed", name)
-                    
+
                     # B) Log the event using the unified format
                     _internal_log(log, lbl, name, payload)
-                    
+
                     # C) Return the original result
                     return result
+
                 return _unified_callback
 
             # Register the new wrapper with the client

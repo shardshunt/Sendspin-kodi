@@ -1,29 +1,32 @@
-import os
-import sys
-import json
-import struct
-import logging
 import asyncio
-import xbmc
-import xbmcgui
+import json
+import logging
+import os
+import struct
+
 import xbmcaddon
+import xbmcgui
 from aiohttp import web
+
+import xbmc
+
 
 class DummyStreamServer:
     """
     Hosts a local HTTP server streaming silent WAV audio.
-    
-    This server acts as a 'virtual source' for Kodi's internal player. By 
-    streaming continuous silence, we trick Kodi into staying in a 'Playing' 
+
+    This server acts as a 'virtual source' for Kodi's internal player. By
+    streaming continuous silence, we trick Kodi into staying in a 'Playing'
     state. This allows the Sendspin service to:
     1. Keep the music visualization or 'Now Playing' UI visible.
     2. Prevent the system from engaging screensavers or power-off timers.
     3. Maintain a consistent UI context for the user.
     """
+
     def __init__(self, port=9999):
         """
         Initialize the dummy server settings.
-        
+
         Args:
             port (int): The local port to host the dummy stream on.
         """
@@ -34,44 +37,40 @@ class DummyStreamServer:
     def _create_wav_header(self, sample_rate=44100, channels=2, bits=16):
         """
         Generates a standard RIFF/WAVE header for a PCM stream.
-        
-        Kodi requires a valid header to identify the stream format even if 
+
+        Kodi requires a valid header to identify the stream format even if
         the data is infinite.
         """
-        header = b'RIFF'
-        header += struct.pack('<I', 0xFFFFFFFF)  # File size (unknown/infinite)
-        header += b'WAVE'
-        header += b'fmt '
-        header += struct.pack('<I', 16)          # Subchunk size
-        header += struct.pack('<H', 1)           # Audio format (PCM)
-        header += struct.pack('<H', channels)
-        header += struct.pack('<I', sample_rate)
-        header += struct.pack('<I', sample_rate * channels * bits // 8)
-        header += struct.pack('<H', channels * bits // 8)
-        header += struct.pack('<H', bits)
-        header += b'data'
-        header += struct.pack('<I', 0xFFFFFFFF)  # Data size (unknown/infinite)
+        header = b"RIFF"
+        header += struct.pack("<I", 0xFFFFFFFF)  # File size (unknown/infinite)
+        header += b"WAVE"
+        header += b"fmt "
+        header += struct.pack("<I", 16)  # Subchunk size
+        header += struct.pack("<H", 1)  # Audio format (PCM)
+        header += struct.pack("<H", channels)
+        header += struct.pack("<I", sample_rate)
+        header += struct.pack("<I", sample_rate * channels * bits // 8)
+        header += struct.pack("<H", channels * bits // 8)
+        header += struct.pack("<H", bits)
+        header += b"data"
+        header += struct.pack("<I", 0xFFFFFFFF)  # Data size (unknown/infinite)
         return header
 
     async def handle_dummy_audio(self, request):
         """
         Aiohttp request handler that streams infinite silence to the client.
         """
-        response = web.StreamResponse(
-            status=200,
-            reason='OK',
-            headers={'Content-Type': 'audio/basic'}
-        )
+        response = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/basic"})
         await response.prepare(request)
 
         try:
             header = self._create_wav_header()
             await response.write(header)
             # Create a 1-second chunk of silence
-            silence = b'\x00' * (44100 * 2 * 2) 
+            silence = b"\x00" * (44100 * 2 * 2)
             while True:
                 await response.write(silence)
-                await asyncio.sleep(0.1) 
+                await asyncio.sleep(0.1)
         except (ConnectionResetError, ConnectionError, BrokenPipeError, asyncio.CancelledError):
             pass
         return response
@@ -81,10 +80,10 @@ class DummyStreamServer:
         Starts the web server background runner.
         """
         app = web.Application()
-        app.router.add_get('/sendspin_dummy', self.handle_dummy_audio)
+        app.router.add_get("/sendspin_dummy", self.handle_dummy_audio)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        site = web.TCPSite(self.runner, '127.0.0.1', self.port)
+        site = web.TCPSite(self.runner, "127.0.0.1", self.port)
         await site.start()
 
     async def stop(self):
@@ -94,14 +93,16 @@ class DummyStreamServer:
         if self.runner:
             await self.runner.cleanup()
 
+
 class KodiManager:
     """
     The primary interface for Kodi-specific UI and Volume operations.
-    
-    This class abstracts JSON-RPC calls and xbmc built-in functions into 
-    clean Python methods. It manages the 'dummy playback' used for UI 
+
+    This class abstracts JSON-RPC calls and xbmc built-in functions into
+    clean Python methods. It manages the 'dummy playback' used for UI
     persistence and monitors the system for volume changes made by the user.
     """
+
     def __init__(self):
         """
         Initializes the manager and internal state tracking.
@@ -109,7 +110,7 @@ class KodiManager:
         self.logger = logging.getLogger("sendspin")
         self.dummy_server = DummyStreamServer()
         self.player = xbmc.Player()
-        
+
         # Internal state to prevent feedback loops between Kodi and Server
         self.last_known_volume = -1
         self.last_known_muted = None
@@ -121,7 +122,7 @@ class KodiManager:
         Starts the support services for Kodi integration.
 
         Args:
-            on_volume_change (callable): An async function called when a 
+            on_volume_change (callable): An async function called when a
                 local volume change is detected. Receives (volume, muted).
         """
         self.volume_callback = on_volume_change
@@ -143,9 +144,9 @@ class KodiManager:
         """
         Updates Kodi's 'Now Playing' information.
 
-        Creates a ListItem with the provided metadata and instructs Kodi 
+        Creates a ListItem with the provided metadata and instructs Kodi
         to 'play' the local dummy stream if it is not already doing so.
-        
+
         Args:
             title (str): Track or stream title.
             artist (str): Performer or source name.
@@ -155,13 +156,13 @@ class KodiManager:
         info_tag = list_item.getMusicInfoTag()
         info_tag.setTitle(title)
         info_tag.setArtist(artist)
-        
+
         if thumb:
-            list_item.setArt({'thumb': thumb})
+            list_item.setArt({"thumb": thumb})
         else:
-            addon_path = xbmcaddon.Addon().getAddonInfo('path')
-            icon = os.path.join(addon_path, 'icon.png')
-            list_item.setArt({'thumb': icon})
+            addon_path = xbmcaddon.Addon().getAddonInfo("path")
+            icon = os.path.join(addon_path, "icon.png")
+            list_item.setArt({"thumb": icon})
 
         if not self.player.isPlaying():
             self.logger.info("Starting dummy playback for UI")
@@ -188,7 +189,7 @@ class KodiManager:
                 "jsonrpc": "2.0",
                 "method": "Application.GetProperties",
                 "params": {"properties": ["volume", "muted"]},
-                "id": 1
+                "id": 1,
             }
             response = xbmc.executeJSONRPC(json.dumps(query))
             result = json.loads(response).get("result", {})
@@ -201,8 +202,8 @@ class KodiManager:
         """
         Sets the Kodi system volume and/or mute state.
 
-        This method updates the internal state tracking before executing 
-        the command to ensure the monitor loop doesn't treat this as a 
+        This method updates the internal state tracking before executing
+        the command to ensure the monitor loop doesn't treat this as a
         new local user action (preventing feedback loops).
 
         Args:
@@ -212,7 +213,7 @@ class KodiManager:
         if volume is not None:
             self.last_known_volume = int(volume)
             xbmc.executebuiltin(f"SetVolume({int(volume)})")
-        
+
         if muted is not None:
             self.last_known_muted = bool(muted)
             state_str = "true" if muted else "false"
@@ -222,8 +223,8 @@ class KodiManager:
         """
         Background loop that polls for manual volume changes in Kodi.
 
-        If the user uses a remote, keyboard, or slider to change volume, 
-        this loop detects it and triggers the 'volume_callback' to notify 
+        If the user uses a remote, keyboard, or slider to change volume,
+        this loop detects it and triggers the 'volume_callback' to notify
         the server and the software audio engine.
         """
         self.logger.info("Kodi Volume monitor started.")
@@ -232,16 +233,16 @@ class KodiManager:
                 current_vol, current_mute = self.get_current_volume()
 
                 # Check if the change originated from the Kodi UI/Hardware
-                vol_changed = (self.last_known_volume != -1 and current_vol != self.last_known_volume)
-                mute_changed = (self.last_known_muted is not None and current_mute != self.last_known_muted)
+                vol_changed = self.last_known_volume != -1 and current_vol != self.last_known_volume
+                mute_changed = self.last_known_muted is not None and current_mute != self.last_known_muted
 
                 if vol_changed or mute_changed:
                     self.last_known_volume = current_vol
                     self.last_known_muted = current_mute
-                    
+
                     if self.volume_callback:
                         asyncio.create_task(self.volume_callback(current_vol, current_mute))
-                
+
                 # Initial sync to baseline
                 if self.last_known_volume == -1:
                     self.last_known_volume = current_vol

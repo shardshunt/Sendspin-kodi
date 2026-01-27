@@ -45,7 +45,7 @@ For this addon to mix audio correctly, Kodi must use the PulseAudio backend.
 ```sh
 mkdir -p /storage/.config/pulseaudio-fix
 ```
-2. Place the script at `/storage/.config/pulseaudio-fix/wait-for-pulse-sink.sh` 
+2. Place the script at `/storage/.config/pulseaudio-fix/wait-for-pulse-sink.sh`
 3. Place the unit at `/storage/.config/system.d/pulseaudio-fix.service`.
 4. Make the script executable:
 ```sh
