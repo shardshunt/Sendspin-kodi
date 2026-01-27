@@ -50,7 +50,7 @@ throttledLog = ThrottledLogger(1)
 
 CLIENT_ID = xbmcaddon.Addon().getSetting("client_id") or "kodi-sendspin-client"
 CLIENT_NAME = "Kodi"
-BUFFERSIZE_REQUEST_MS = 3000 # 3 seconds
+BUFFERSIZE_REQUEST_MS = 5000 # 5 seconds
 
 class SendspinServiceController:
     """

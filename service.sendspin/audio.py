@@ -52,7 +52,7 @@ class AudioRouter:
 
         hw_sink = self.get_hardware_sink()
         if hw_sink and not self.loopback_id:
-            loop_cmd = ['load-module', 'module-loopback', f'source={self.sink_name}.monitor', f'sink={hw_sink}', 'latency_msec=100']
+            loop_cmd = ['load-module', 'module-loopback', f'source={self.sink_name}.monitor', f'sink={hw_sink}', 'latency_msec=10']
             self.loopback_id = self._run_pactl(loop_cmd)
             self.logger.info(f"Routing {self.sink_name} -> {hw_sink}")
         return self.sink_name
@@ -101,7 +101,7 @@ class SyncPlaybackEngine:
         self._queue = asyncio.PriorityQueue()
         self._worker_task = None
         self._running = False
-        self.target_latency = 0.05
+        self.target_latency = 0.02
         
         # Software Volume State
         self._volume = 100
@@ -186,7 +186,7 @@ class SyncPlaybackEngine:
         """
         fmt = f"s{bit_depth}le"
         cmd = ['pacat', '--playback', '--device', target_sink, '--format', fmt, 
-               '--rate', str(rate), '--channels', str(channels), '--latency-msec=50']
+               '--rate', str(rate), '--channels', str(channels), '--latency-msec=10']
         self.process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
         self._running = True
         self._worker_task = asyncio.create_task(self._scheduler_loop())
