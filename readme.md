@@ -18,13 +18,11 @@ TODO
 
 The addon requires several Python libraries to function. A helper script is included to download them into the correct folder.
 
-**Prerequisites:** You must have `Python 3.11` and `pip` installed on your system.
-
 Run the script:
 ```sh
-python3 /service.sendspin/tools/get_libs.py
+./service.sendspin/tools/get_libs.py
 ```
-This will install the dependencies into the `service.sendspin/resources/lib` folder.
+This will use uv and pip to create a venv file and install the dependencies into the `service.sendspin/resources/lib` folder.
 
 ### 2. Package the Addon
 
@@ -39,14 +37,15 @@ For this addon to mix audio correctly, Kodi must use the PulseAudio backend.
 2. Check the Audio output device setting.
 3. Ensure the selected device name begins with PULSE: (e.g., PULSE: Default).
 
-#### fix no pulse audio for libreElec
+#### fix no pulse audio (for libreElec)
 
+This fix prevents kodi booting before pulseaudio devices are avalible.
 1. Create directories and upload the script and service files:
 ```sh
 mkdir -p /storage/.config/pulseaudio-fix
 ```
-2. Place the script at `/storage/.config/pulseaudio-fix/wait-for-pulse-sink.sh`
-3. Place the unit at `/storage/.config/system.d/pulseaudio-fix.service`.
+2. Place the script found in tools at `/storage/.config/pulseaudio-fix/wait-for-pulse-sink.sh`
+3. Place the unit found in tools at `/storage/.config/system.d/pulseaudio-fix.service`.
 4. Make the script executable:
 ```sh
 chmod +x /storage/.config/pulseaudio-fix/wait-for-pulse-sink.sh

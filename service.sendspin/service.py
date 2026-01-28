@@ -114,7 +114,7 @@ class SendspinServiceController:
             client_name=CLIENT_NAME,
             roles=[Roles.PLAYER, Roles.METADATA],
             player_support=self.player_support,
-            static_delay_ms=-150,
+            static_delay_ms=0,
             initial_volume=current_vol,
             initial_muted=current_mute,
         )
