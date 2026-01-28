@@ -9,9 +9,7 @@ class AudioRouter:
     """
     Manages PulseAudio virtual sinks and routing for the Sendspin service.
 
-    This class handles the creation of a 'null-sink' to act as a virtual audio
-    cable and a 'loopback' module to pipe that virtual audio into the
-    physical hardware sink.
+    Creates a null sink and links it to the hardware sink via a loopback module.
     """
 
     def __init__(self):
@@ -24,12 +22,6 @@ class AudioRouter:
     def _run_pactl(self, args):
         """
         Executes a PulseAudio control (pactl) command.
-
-        Args:
-            args (list): List of command arguments to pass to pactl.
-
-        Returns:
-            str or None: The stdout of the command if successful, else None.
         """
         try:
             result = subprocess.run(["pactl"] + args, capture_output=True, text=True, timeout=5)
@@ -42,12 +34,6 @@ class AudioRouter:
     def setup_routing(self):
         """
         Sets up the virtual audio routing path in PulseAudio.
-
-        Creates a null sink if it doesn't exist and links its monitor source
-        to the physical hardware sink via a loopback module.
-
-        Returns:
-            str: The name of the virtual sink to be used by playback tools.
         """
         if not self.null_sink_id:
             cmd = [
@@ -74,10 +60,6 @@ class AudioRouter:
     def get_hardware_sink(self):
         """
         Identifies the primary physical audio output device.
-
-        Returns:
-            str: The name of the hardware sink (usually starting with 'alsa_output')
-                 or '@DEFAULT_SINK@' as a fallback.
         """
         out = self._run_pactl(["list", "sinks", "short"])
         if out:
@@ -89,9 +71,6 @@ class AudioRouter:
     def cleanup(self):
         """
         Removes the virtual modules from PulseAudio to restore system state.
-
-        This should be called during service shutdown to prevent dangling
-        virtual devices.
         """
         if self.loopback_id:
             self._run_pactl(["unload-module", self.loopback_id])
@@ -104,10 +83,6 @@ class AudioRouter:
 class SyncPlaybackEngine:
     """
     Handles time-synchronized PCM playback with software volume scaling.
-
-    This engine pipes audio data into the PulseAudio 'pacat' utility and
-    adjusts the amplitude of samples in-flight to provide independent volume
-    control.
     """
 
     def __init__(self):
@@ -126,27 +101,18 @@ class SyncPlaybackEngine:
     def set_volume(self, volume_int):
         """
         Updates the internal software volume level.
-
-        Args:
-            volume_int (int): Volume level from 0 to 100.
         """
         self._volume = max(0, min(100, int(volume_int)))
 
     def set_mute(self, is_muted):
         """
         Updates the software mute state.
-
-        Args:
-            is_muted (bool): Whether the audio should be silenced.
         """
         self._muted = bool(is_muted)
 
     def get_volume(self):
         """
         Returns the current software volume level.
-
-        Returns:
-            int: The volume level (0-100).
         """
         return self._volume
 
@@ -156,12 +122,6 @@ class SyncPlaybackEngine:
 
         Uses a 1.5 power exponent to better match human hearing perception
         of loudness.
-
-        Args:
-            data (bytes): Raw 16-bit LE PCM data.
-
-        Returns:
-            bytes: The volume-adjusted PCM data.
         """
         if self._muted or self._volume == 0:
             return b"\x00" * len(data)
@@ -184,8 +144,8 @@ class SyncPlaybackEngine:
         Links the engine to the client's time synchronization filter.
 
         Args:
-            time_provider_func (callable): Function to map server time to local time.
-            sync_check_func (callable): Function to check if clock sync is established.
+            time_provider_func (callable): Pass AIOSENDSPIN compute_play_time function here.
+            sync_check_func (callable): Pass AIOSENDSPIN is_time_synchronized function here.
         """
         self.get_play_time = time_provider_func
         self.is_synchronized = sync_check_func

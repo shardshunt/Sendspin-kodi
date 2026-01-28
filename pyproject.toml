@@ -3,7 +3,7 @@ name = "sendspin-kodi"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = "~=3.11.0"
+requires-python = ">=3.11, <3.12"
 dependencies = [
     "aiohttp>=3.13.3",
     "av==14.2.0",
@@ -16,10 +16,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "kodistubs>=21.0.0",
     "pre-commit>=4.5.1",
     "ruff>=0.14.14",
 ]
-
 
 [tool.ruff]
 line-length = 120
@@ -57,7 +57,6 @@ ignore = [
   "C420",   # reads a little worse. fromkeys predates dict comprehensions
   "C416",   # There are a few cases where it's nice to have names for the dict items
   "PIE790", # there's nothing wrong with pass
-  "UP038",
 ]
 
 unfixable = [

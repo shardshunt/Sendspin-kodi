@@ -2,28 +2,27 @@
 """
 Sendspin Service for Kodi.
 
-This service runs in the background, connects to a Sendspin server via WebSocket,
-advertises itself via mDNS, and streams received PCM audio to the local hardware
-using PulseAudio.
+Uses aiosendspin to connect to a Sendspin server and route audio via a pulseaudio virtual sink
 """
 
 # system imports
+import os
 import sys
 import time
 import traceback
-from pathlib import Path
 
-# setup module paths
-# ADDON_ROOT = Path(__file__)
-# VENDOR_LIB = ADDON_ROOT / "resources" / "lib"
-sys.path.insert(0, str(Path(__file__) / "resources" / "lib"))
-sys.path.insert(0, __file__)
+if (
+    os.path.isdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "lib"))
+    and os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "lib") not in sys.path
+):
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "lib"))
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # standard library imports
 import asyncio
 import logging
 
-# Throttled logger for debug
 import logger
 import xbmcaddon
 
@@ -64,9 +63,6 @@ BUFFERSIZE_REQUEST_MS = 5000  # 5 seconds
 class SendspinServiceController:
     """
     Main Service Controller.
-
-    Orchestrates the Sendspin client, the audio router, and the playback engine.
-    Handles network events and routes audio data to the player.
     """
 
     def __init__(self):
@@ -88,7 +84,7 @@ class SendspinServiceController:
         self.playback_state = PlaybackStateType.STOPPED
 
     async def setup(self):
-        """Registers listeners and starts the Client Listener."""
+        """Initial setup and connection to Sendspin server."""
 
         current_vol, current_mute = self.kodi.get_current_volume()
 
@@ -160,7 +156,7 @@ class SendspinServiceController:
         await self.cleanup()
 
     async def cleanup(self):
-        """Clean shutdown."""
+        """Clean shutdown. TODO: Needs work."""
         self.engine.stop()
         self.router.cleanup()
         if self.client:
@@ -219,7 +215,7 @@ class SendspinServiceController:
             self.kodi.update_ui(title="Sendspin Stream", artist="Sendspin Stream")
 
     def on_stream_end(self, roles=None):
-        """Triggered when stream ends."""
+        """Triggered when stream ends. TODO: Needs work."""
         self.logger.info("Stream End received")
         self.is_playing = False
         self.playback_state = PlaybackStateType.STOPPED

@@ -1,86 +1,91 @@
 #!/usr/bin/env python3
-"""
-Kodi vendor helper.
-"""
-
-from __future__ import annotations
-
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-PACKAGES = ["aiohttp", "mashumaro", "zeroconf", "pillow", "orjson", "av==14.2.0", "numpy"]
-
-AIOSENDSPIN_PKG = "aiosendspin==3.0.0"
+# Packages to explicitly exclude from the vendor folder
+DEV_PACKAGES = [
+    "kodistubs",
+    "pre-commit",
+    "pre_commit",
+    "ruff",
+    "nodeenv",
+    "yaml",
+    "_pytest",
+    "pytest",
+]
 
 
 def run(cmd: list[str]) -> None:
-    print("Running:", " ".join(cmd))
-    proc = subprocess.run(cmd)
-    if proc.returncode != 0:
-        sys.exit(proc.returncode)
-
-
-def clean_target(target: Path) -> None:
-    if target.exists():
-        shutil.rmtree(target)
-    target.mkdir(parents=True, exist_ok=True)
-
-
-def enforce_cp311_only(target: Path) -> None:
-    for so in target.rglob("*.so"):
-        name = so.name
-        if "cp314" in name or "cpython-314" in name:
-            sys.exit(f"Incompatible binary detected: {name}")
+    print(f"Running: {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
 
 
 def main() -> int:
+    # Path setup
     tools_dir = Path(__file__).resolve().parent
     addon_dir = tools_dir.parent
-    target = addon_dir / "resources" / "lib"
+    project_root = addon_dir.parent
+    target_dir = project_root / "service.sendspin" / "resources" / "lib"
+    venv_dir = project_root / ".venv"
 
-    print("Cleaning target:", target)
-    clean_target(target)
+    # Define the pip path inside the venv
+    pip_exe = venv_dir / "bin" / "pip"
 
-    base_cmd = [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "--only-binary=:all:",
-        "--platform",
-        "manylinux2014_x86_64",
-        "--python-version",
-        "311",
-        "--implementation",
-        "cp",
-        "--abi",
-        "cp311",
-        "--target",
-        str(target),
-    ]
+    # 1. Sync dependencies from pyproject.toml
+    # This ensures aiohttp, av, numpy, etc. are present in .venv
+    run(["uv", "sync"])
 
-    # Install normal packages with dependencies
-    for pkg in PACKAGES:
-        run(base_cmd + [pkg])
+    if not pip_exe.exists():
+        print("Pip not found in venv. Installing pip via uv...")
+        run(["uv", "pip", "install", "pip"])
 
-    # Install aiosendspin itself only, ignoring Requires-Python
-    run(
-        base_cmd
-        + [
-            "--no-deps",
-            "--ignore-requires-python",
-            AIOSENDSPIN_PKG,
-        ]
-    )
+    # 2. Install aiosendspin specifically into the venv
+    # uv pip interacts directly with the .venv created by uv sync
+    run([str(pip_exe), "install", "aiosendspin==3.0.0", "--no-deps", "--ignore-requires-python"])
 
-    enforce_cp311_only(target)
+    # 3. Clean and prepare target directory
+    print(f"Cleaning target: {target_dir}")
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
 
-    print("Vendor install complete. Final contents:")
-    for p in sorted(target.iterdir()):
-        print(" -", p.name)
+    # 4. Locate site-packages
+    # Standard location for Python 3.11 on Unix-like systems
+    site_packages = venv_dir / "lib" / "python3.11" / "site-packages"
 
+    # Fallback for Windows-style venv structure
+    if not site_packages.exists():
+        site_packages = venv_dir / "Lib" / "site-packages"
+
+    if not site_packages.exists():
+        print(f"Error: Could not find site-packages in {venv_dir}")
+        return 1
+
+    # 5. Copy packages to the Kodi addon directory
+    print(f"Copying libraries to {target_dir}...")
+    for item in site_packages.iterdir():
+        # Skip metadata, installer tools, and cache files
+        if item.name.endswith((".dist-info", ".pth", ".pyc")) or item.name in [
+            "__pycache__",
+            "pip",
+            "_pytest",
+            "setuptools",
+        ]:
+            continue
+        # Skip dev packages
+        if item.name.lower() in [p.lower() for p in DEV_PACKAGES]:
+            print(f" - Skipping dev dependency: {item.name}")
+            continue
+
+        dest = target_dir / item.name
+        if item.is_dir():
+            shutil.copytree(item, dest)
+        else:
+            shutil.copy2(item, dest)
+
+    print("Libraries installed to resources/lib.")
     return 0
 
 

@@ -33,6 +33,7 @@ __pycache__/
 .vscode/
 .idea/
 *.py.txt
+.ruff_cache/
 
 # Ignore sync conflict files
 *.sync-conflict-*
