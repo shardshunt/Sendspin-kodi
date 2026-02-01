@@ -114,12 +114,12 @@ class SendspinServiceController:
             client_name=CLIENT_NAME,
             roles=[Roles.PLAYER, Roles.METADATA],
             player_support=self.player_support,
-            static_delay_ms=0,
+            static_delay_ms=-640,
             initial_volume=current_vol,
             initial_muted=current_mute,
         )
 
-        self.engine.set_time_provider(self.client.compute_play_time, self.client.is_time_synchronized)
+        self.engine.set_time_provider(self.client)
 
         handlers = {
             "add_stream_start_listener": self.on_stream_start,

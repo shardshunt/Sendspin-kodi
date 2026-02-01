@@ -67,7 +67,7 @@ class DummyStreamServer:
             header = self._create_wav_header()
             await response.write(header)
             # Create a 1-second chunk of silence
-            silence = b"\x00" * (44100 * 2 * 2)
+            silence = b"\x00" * (44100 * 2 * 2 * 2)
             while True:
                 await response.write(silence)
                 await asyncio.sleep(0.1)
