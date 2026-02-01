@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import struct
+from collections.abc import Awaitable, Callable
 
 import xbmcaddon
 import xbmcgui
@@ -34,7 +35,7 @@ class DummyStreamServer:
         self.runner = None
         self.logger = logging.getLogger("sendspin")
 
-    def _create_wav_header(self, sample_rate=44100, channels=2, bits=16):
+    def _create_wav_header(self, sample_rate: int = 44100, channels: int = 2, bits: int = 16) -> bytes:
         """
         Generates a standard RIFF/WAVE header for a PCM stream.
 
@@ -56,7 +57,7 @@ class DummyStreamServer:
         header += struct.pack("<I", 0xFFFFFFFF)  # Data size (unknown/infinite)
         return header
 
-    async def handle_dummy_audio(self, request):
+    async def handle_dummy_audio(self, request: web.BaseRequest) -> web.StreamResponse:
         """
         Aiohttp request handler that streams infinite silence to the client.
         """
@@ -75,7 +76,7 @@ class DummyStreamServer:
             pass
         return response
 
-    async def start(self):
+    async def start(self) -> None:
         """
         Starts the web server background runner.
         """
@@ -86,9 +87,9 @@ class DummyStreamServer:
         site = web.TCPSite(self.runner, "127.0.0.1", self.port)
         await site.start()
 
-    async def stop(self):
+    async def stop(self) -> None:
         """
-        Gracefully shuts down the web server.
+        Shuts down the web server.
         """
         if self.runner:
             await self.runner.cleanup()
@@ -117,19 +118,15 @@ class KodiManager:
         self.monitor_task = None
         self.volume_callback = None
 
-    async def start(self, on_volume_change):
+    async def start(self, on_volume_change: Callable[[int, bool], Awaitable[None]]) -> None:
         """
         Starts the support services for Kodi integration.
-
-        Args:
-            on_volume_change (callable): An async function called when a
-                local volume change is detected. Receives (volume, muted).
         """
         self.volume_callback = on_volume_change
         await self.dummy_server.start()
         self.monitor_task = asyncio.create_task(self._monitor_volume_loop())
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """
         Stops all background tasks, dummy servers, and UI playback.
         """
@@ -140,17 +137,12 @@ class KodiManager:
 
     # --- UI & Metadata ---
 
-    def update_ui(self, title="Sendspin Stream", artist="Remote Source", thumb=""):
+    def update_ui(self, title: str = "Sendspin Stream", artist: str = "Remote Source", thumb: str = "") -> None:
         """
         Updates Kodi's 'Now Playing' information.
 
         Creates a ListItem with the provided metadata and instructs Kodi
         to 'play' the local dummy stream if it is not already doing so.
-
-        Args:
-            title (str): Track or stream title.
-            artist (str): Performer or source name.
-            thumb (str): Optional path or URL to an album art image.
         """
         list_item = xbmcgui.ListItem(title)
         info_tag = list_item.getMusicInfoTag()
@@ -177,12 +169,9 @@ class KodiManager:
 
     # --- Volume Logic ---
 
-    def get_current_volume(self):
+    def get_current_volume(self) -> tuple[int, bool]:
         """
         Retrieves the current application volume via JSON-RPC.
-
-        Returns:
-            tuple: (int volume, bool muted) where volume is 0-100.
         """
         try:
             query = {
@@ -198,17 +187,13 @@ class KodiManager:
             self.logger.debug(f"Failed to get properties via JSON-RPC: {e}")
             return 100, False
 
-    def set_volume(self, volume=None, muted=None):
+    def set_volume(self, volume: int = None, muted: bool = None) -> None:
         """
         Sets the Kodi system volume and/or mute state.
 
         This method updates the internal state tracking before executing
         the command to ensure the monitor loop doesn't treat this as a
         new local user action (preventing feedback loops).
-
-        Args:
-            volume (int, optional): New volume level (0-100).
-            muted (bool, optional): New mute state.
         """
         if volume is not None:
             self.last_known_volume = int(volume)
@@ -219,7 +204,7 @@ class KodiManager:
             state_str = "true" if muted else "false"
             xbmc.executebuiltin(f"SetMute({state_str})")
 
-    async def _monitor_volume_loop(self):
+    async def _monitor_volume_loop(self) -> None:
         """
         Background loop that polls for manual volume changes in Kodi.
 

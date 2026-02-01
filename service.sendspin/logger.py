@@ -22,7 +22,6 @@ import xbmc
 
 # Limits for truncation when generating fallback representations
 _TRUNC_URL = 20
-_TRUNC_REPR = 400
 
 
 def init_logger() -> logging.Logger:
@@ -78,24 +77,12 @@ def _truncate_url(url: Any, max_len: int = _TRUNC_URL) -> str:
         return "<bad-url>"
 
 
-def _truncate_repr(s: str | None, max_len: int = _TRUNC_REPR) -> str:
-    """Truncates object strings to a safe maximum length."""
-    if s is None:
-        return "None"
-    try:
-        if len(s) <= max_len:
-            return s
-        return s[:max_len] + "...(truncated)"
-    except Exception:
-        return "<unrepresentable>"
-
-
 def _deep_clean_payload(obj: Any) -> Any:
     """Recursively removes UndefinedFields and converts objects to clean dictionaries."""
     try:
-        if obj is None or isinstance(obj, (bool, int, float, str)):
+        if obj is None or isinstance(obj, bool | int | float | str):
             return obj
-        if isinstance(obj, (bytes, bytearray)):
+        if isinstance(obj, bytes | bytearray):
             return f"<bytes len={len(obj)}>"
 
         # Handle UndefinedField sentinel type
@@ -110,7 +97,7 @@ def _deep_clean_payload(obj: Any) -> Any:
         if isinstance(obj, dict):
             return {k: _deep_clean_payload(v) for k, v in obj.items() if type(v).__name__ != "UndefinedField"}
 
-        if isinstance(obj, (list, tuple, set)):
+        if isinstance(obj, list | tuple | set):
             return [_deep_clean_payload(v) for v in obj if type(v).__name__ != "UndefinedField"]
 
         if hasattr(obj, "__dict__"):
@@ -175,7 +162,7 @@ def _format_payload_pretty(payload: Any, indent_level: int = 1) -> str:
 def _internal_log(log: logging.Logger, label: str, name: str, payload: Any):
     """Formats and writes listener event data to the active loggers."""
     try:
-        if isinstance(payload, (bytes, bytearray)):
+        if isinstance(payload, bytes | bytearray):
             log.info("%s %s: binary len=%d", label, name, len(payload))
             return
         ptype = type(payload).__name__ if payload is not None else "None"

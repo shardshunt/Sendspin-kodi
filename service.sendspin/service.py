@@ -11,6 +11,7 @@ import sys
 import time
 import traceback
 
+# adjust sys.path for embedded Kodi environment
 if (
     os.path.isdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "lib"))
     and os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "lib") not in sys.path
@@ -27,8 +28,8 @@ import logger
 import xbmcaddon
 
 # aiosendspin imports
-from aiosendspin.client import ClientListener, SendspinClient
-from aiosendspin.models.core import ServerCommandPayload, ServerStatePayload, StreamStartMessage
+from aiosendspin.client import AudioFormat, ClientListener, SendspinClient
+from aiosendspin.models.core import ServerCommandPayload, ServerStatePayload, StreamEndMessage, StreamStartMessage
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlaybackStateType, PlayerCommand, PlayerStateType, Roles
 from audio import AudioRouter, SyncPlaybackEngine
@@ -40,18 +41,18 @@ import xbmc
 class ThrottledLogger:
     """Helper to prevent log flooding during high-frequency events."""
 
-    def __init__(self, interval=0.5):
+    def __init__(self, interval: int = 1) -> None:
         self.interval = interval
         self.last_log_time = 0
 
-    def log(self, message):
+    def log(self, message: str) -> None:
         current_time = time.time()
         if current_time - self.last_log_time >= self.interval:
             xbmc.log(f"[Sendspin-Debug] {message}", level=xbmc.LOGDEBUG)
             self.last_log_time = current_time
 
 
-throttled_log = ThrottledLogger(1)
+throttled_log = ThrottledLogger()
 
 # --- CONFIGURATION & UTILITIES ---
 
@@ -65,10 +66,10 @@ class SendspinServiceController:
     Main Service Controller.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.logger = logging.getLogger("sendspin")
         self.addon = xbmcaddon.Addon()
-        self.engine = SyncPlaybackEngine()
+        self.engine = SyncPlaybackEngine(debug_logging=True)
         self.router = AudioRouter()
         self.kodi = KodiManager()
         self.client: SendspinClient = None
@@ -83,7 +84,7 @@ class SendspinServiceController:
         self.is_playing = False
         self.playback_state = PlaybackStateType.STOPPED
 
-    async def setup(self):
+    async def setup(self) -> None:
         """Initial setup and connection to Sendspin server."""
 
         current_vol, current_mute = self.kodi.get_current_volume()
@@ -91,12 +92,6 @@ class SendspinServiceController:
         # Sendspin Player Support Declaration
         self.player_support = ClientHelloPlayerSupport(
             supported_formats=[
-                # SupportedAudioFormat(
-                #     AudioCodec.PCM,
-                #     channels=2,
-                #     sample_rate=48000,
-                #     bit_depth=16,
-                # ),
                 SupportedAudioFormat(
                     AudioCodec.PCM,
                     channels=2,
@@ -114,7 +109,7 @@ class SendspinServiceController:
             client_name=CLIENT_NAME,
             roles=[Roles.PLAYER, Roles.METADATA],
             player_support=self.player_support,
-            static_delay_ms=-640,
+            static_delay_ms=-750,
             initial_volume=current_vol,
             initial_muted=current_mute,
         )
@@ -146,7 +141,7 @@ class SendspinServiceController:
         self.logger.info("Starting Sendspin listener.")
         await self.listener.start()
 
-    async def run(self):
+    async def run(self) -> None:
         """Main execution loop."""
         await self.setup()
         await self.kodi.start(on_volume_change=self.handle_local_volume_change)
@@ -155,7 +150,7 @@ class SendspinServiceController:
             await asyncio.sleep(1)
         await self.cleanup()
 
-    async def cleanup(self):
+    async def cleanup(self) -> None:
         """Clean shutdown. TODO: Needs work."""
         self.engine.stop()
         self.router.cleanup()
@@ -165,7 +160,7 @@ class SendspinServiceController:
 
     # --- Kodi Event Handlers  ---
 
-    async def handle_local_volume_change(self, volume, muted):
+    async def handle_local_volume_change(self, volume: int, muted: bool) -> None:
         """Called by KodiManager when the user changes volume locally."""
         self.logger.debug(f"Syncing local volume: Vol={volume}, Mute={muted}")
 
@@ -178,7 +173,7 @@ class SendspinServiceController:
             await self.client.send_player_state(state=PlayerStateType.SYNCHRONIZED, volume=volume, muted=muted)
 
     # --- Sendspin Event Handlers ---
-    def on_stream_start(self, message: StreamStartMessage):
+    def on_stream_start(self, message: StreamStartMessage) -> None:
         """Triggered when Sendspin starts a stream."""
         self.logger.info(
             f"Stream Start Received. Sample Rate: {message.payload.player.sample_rate}, Channels: {message.payload.player.channels}, Bit Depth: {message.payload.player.bit_depth}"
@@ -198,11 +193,11 @@ class SendspinServiceController:
         self.engine.set_mute(muted)
         asyncio.create_task(self.client.send_player_state(state=PlayerStateType.SYNCHRONIZED, volume=vol, muted=muted))
 
-    def on_audio_chunk(self, server_timestamp_us: int, audio_data: bytes, audio_format):
+    def on_audio_chunk(self, server_timestamp_us: int, audio_data: bytes, audio_format: AudioFormat) -> None:
         """Handles incoming audio data chunks."""
         self.engine.play_chunk(server_timestamp_us, audio_data)
 
-    def on_metadata_update(self, payload: ServerStatePayload):
+    def on_metadata_update(self, payload: ServerStatePayload) -> None:
         """Called when track info (Artist/Title/Art) changes."""
         metadata = getattr(payload, "metadata", {})
 
@@ -214,19 +209,19 @@ class SendspinServiceController:
         if isinstance(title, str) and isinstance(artist, str) and self.is_playing:
             self.kodi.update_ui(title="Sendspin Stream", artist="Sendspin Stream")
 
-    def on_stream_end(self, roles=None):
+    def on_stream_end(self, message: StreamEndMessage) -> None:
         """Triggered when stream ends. TODO: Needs work."""
         self.logger.info("Stream End received")
         self.is_playing = False
         self.playback_state = PlaybackStateType.STOPPED
         asyncio.create_task(self._async_stop_sequence())
 
-    async def _async_stop_sequence(self):
+    async def _async_stop_sequence(self) -> None:
         self.kodi.stop_ui()
         await asyncio.sleep(4)
         self.engine.stop()
 
-    def on_server_command(self, payload: ServerCommandPayload):
+    def on_server_command(self, payload: ServerCommandPayload) -> None:
         """Handle Volume/Mute commands from the Sendspin server."""
         command_data = getattr(payload, "player", None)
         self.logger.debug(f"Server Command received: {command_data.command}")

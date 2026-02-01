@@ -12,7 +12,6 @@ class AudioRouter:
     """
 
     def __init__(self):
-        self.sink_name = "Sendspin_Sink"
         self.loopback_id = None
         self.null_sink_id = None
         self.logger = logging.getLogger("sendspin")
@@ -26,15 +25,16 @@ class AudioRouter:
             self.logger.info(f"pactl error: {e}")
         return ""
 
-    def setup_routing(self) -> str:
+    def setup_routing(self, sink_name: str = "Sendspin_Sink") -> str:
         """
         Sets up the virtual sink and loopback to hardware sink.
         """
+
         if not self.null_sink_id:
             cmd = [
                 "load-module",
                 "module-null-sink",
-                f"sink_name={self.sink_name}",
+                f"sink_name={sink_name}",
                 "sink_properties=device.description=Sendspin_Virtual_Cable",
             ]
             self.null_sink_id = self._run_pactl(cmd)
@@ -44,12 +44,12 @@ class AudioRouter:
             loop_cmd = [
                 "load-module",
                 "module-loopback",
-                f"source={self.sink_name}.monitor",
+                f"source={sink_name}.monitor",
                 f"sink={hw_sink}",
                 "latency_msec=200",
             ]
             self.loopback_id = self._run_pactl(loop_cmd)
-        return self.sink_name
+        return sink_name
 
     def get_hardware_sink(self) -> str:
         out = self._run_pactl(["list", "sinks", "short"])
@@ -75,7 +75,7 @@ class SyncPlaybackEngine:
     Audio engine using pacat.
     """
 
-    def __init__(self):
+    def __init__(self, debug_logging: bool = False):
         self.process = None
         self.logger = logging.getLogger("sendspin")
         self._queue = asyncio.PriorityQueue()
@@ -102,6 +102,7 @@ class SyncPlaybackEngine:
         self._last_sync_log_time = 0
 
         # for logging
+        self.debug_logging = debug_logging
         self._stat_chunks_received = 0
         self._stat_chunks_processed = 0
         self._stat_dropped_late = 0
@@ -134,6 +135,9 @@ class SyncPlaybackEngine:
         self.is_synchronized = aiosendspin_client.is_time_synchronized
 
     def start(self, rate: int, channels: int, bit_depth: int, target_sink: str) -> None:
+        """
+        Starts the audio playback engine.
+        """
         self._running = True
 
         # stop existing tasks if any
@@ -184,7 +188,7 @@ class SyncPlaybackEngine:
 
         # --- Debug Logging Loop ---
 
-    async def _debug_stats_loop(self):
+    async def _debug_stats_loop(self) -> None:
         """Logs detailed audio and sync statistics every 5 seconds."""
         while self._running:
             await asyncio.sleep(20)
@@ -207,7 +211,8 @@ class SyncPlaybackEngine:
                 f"Drops (Late): {self._stat_dropped_late} | "
                 f"Gaps (Silence): {self._stat_silence_inserted}"
             )
-            self.logger.info(msg)
+            if self.debug_logging:
+                self.logger.info(msg)
 
     # --- PA Latency Monitoring ---
     async def _query_pactl(self, args: list[str]) -> str:
@@ -261,7 +266,7 @@ class SyncPlaybackEngine:
 
     # --- Audio Scheduling ---
     def _apply_drift_correction(self, data: bytes) -> bytes:
-        """Drops or inserts frames to match the server's clock speed."""
+        """Drops or inserts frames based on time servers drift parameter."""
         audio_array = np.frombuffer(data, dtype=np.int16).reshape(-1, self._channels)
         num_frames = audio_array.shape[0]
 
@@ -281,6 +286,9 @@ class SyncPlaybackEngine:
         return audio_array.tobytes()
 
     def play_chunk(self, server_timestamp_us: int, data: bytes) -> None:
+        """
+        Schedules an audio chunk for playback, applying drift correction and handling gaps/overlaps.
+        """
         if not self._running:
             return
 
