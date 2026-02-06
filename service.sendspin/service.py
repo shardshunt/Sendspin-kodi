@@ -32,7 +32,7 @@ from aiosendspin.client import AudioFormat, ClientListener, SendspinClient
 from aiosendspin.models.core import ServerCommandPayload, ServerStatePayload, StreamEndMessage, StreamStartMessage
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlaybackStateType, PlayerCommand, PlayerStateType, Roles
-from audio import AudioRouter, SyncPlaybackEngine
+from audio import PulseAudioRouter, SyncPlaybackEngine
 from kodi import KodiManager
 
 import xbmc
@@ -68,11 +68,10 @@ class SendspinServiceController:
 
     def __init__(self) -> None:
         self.logger = logging.getLogger("sendspin")
-        self.addon = xbmcaddon.Addon()
-        self.engine = SyncPlaybackEngine(debug_logging=True)
-        self.router = AudioRouter()
-        self.kodi = KodiManager()
-        self.client: SendspinClient = None
+        self.playback_engine = SyncPlaybackEngine(debug_logging=True)
+        self.audio_router = PulseAudioRouter()
+        self.kodi = KodiManager(stop_callback=self.handle_stop)
+        self.sendspin_client: SendspinClient = None
 
         # Audio Configuration
         self.sample_rate_max = 48000
@@ -114,7 +113,7 @@ class SendspinServiceController:
             initial_muted=current_mute,
         )
 
-        self.engine.set_time_provider(self.client)
+        self.playback_engine.set_time_provider(self.client)
 
         handlers = {
             "add_stream_start_listener": self.on_stream_start,
@@ -152,8 +151,9 @@ class SendspinServiceController:
 
     async def cleanup(self) -> None:
         """Clean shutdown. TODO: Needs work."""
-        self.engine.stop()
-        self.router.cleanup()
+        self.playback_engine.stop()
+        self.audio_router.cleanup()
+        await self.kodi.cleanup()
         if self.client:
             await self.client.disconnect()
         self.logger.info("Shutting down Sendspin service...")
@@ -165,12 +165,22 @@ class SendspinServiceController:
         self.logger.debug(f"Syncing local volume: Vol={volume}, Mute={muted}")
 
         # Update Audio Engine
-        self.engine.set_volume(volume)
-        self.engine.set_mute(muted)
+        self.playback_engine.set_volume(volume)
+        self.playback_engine.set_mute(muted)
 
         # Push to Server
         if self.client:
             await self.client.send_player_state(state=PlayerStateType.SYNCHRONIZED, volume=volume, muted=muted)
+
+    def handle_stop(self) -> None:
+        """Stop handler triggered by Kodi Player events."""
+        self.logger.info("Playback stop detected.")
+        if self.playback_state == PlaybackStateType.STOPPED:
+            return
+        self.is_playing = False
+        self.playback_state = PlaybackStateType.STOPPED
+        self.playback_engine.stop()
+        self.kodi.stop_ui()
 
     # --- Sendspin Event Handlers ---
     def on_stream_start(self, message: StreamStartMessage) -> None:
@@ -180,8 +190,8 @@ class SendspinServiceController:
         )
         self.is_playing = True
 
-        virtual_sink = self.router.setup_routing()
-        self.engine.start(
+        virtual_sink = self.audio_router.setup_routing()
+        self.playback_engine.start(
             rate=message.payload.player.sample_rate,
             channels=message.payload.player.channels,
             bit_depth=message.payload.player.bit_depth,
@@ -189,13 +199,13 @@ class SendspinServiceController:
         )
         self.playback_state = PlaybackStateType.PLAYING
         vol, muted = self.kodi.get_current_volume()
-        self.engine.set_volume(vol)
-        self.engine.set_mute(muted)
+        self.playback_engine.set_volume(vol)
+        self.playback_engine.set_mute(muted)
         asyncio.create_task(self.client.send_player_state(state=PlayerStateType.SYNCHRONIZED, volume=vol, muted=muted))
 
     def on_audio_chunk(self, server_timestamp_us: int, audio_data: bytes, audio_format: AudioFormat) -> None:
         """Handles incoming audio data chunks."""
-        self.engine.play_chunk(server_timestamp_us, audio_data)
+        self.playback_engine.play_chunk(server_timestamp_us, audio_data)
 
     def on_metadata_update(self, payload: ServerStatePayload) -> None:
         """Called when track info (Artist/Title/Art) changes."""
@@ -203,7 +213,6 @@ class SendspinServiceController:
 
         title = getattr(metadata, "title", "Unknown")
         artist = getattr(metadata, "artist", "Unknown")
-        # thumb = getattr(metadata, "artwork_url", "")
 
         self.logger.info(f"Metadata Update: {artist} - {title}")
         if isinstance(title, str) and isinstance(artist, str) and self.is_playing:
@@ -212,14 +221,7 @@ class SendspinServiceController:
     def on_stream_end(self, message: StreamEndMessage) -> None:
         """Triggered when stream ends. TODO: Needs work."""
         self.logger.info("Stream End received")
-        self.is_playing = False
-        self.playback_state = PlaybackStateType.STOPPED
-        asyncio.create_task(self._async_stop_sequence())
-
-    async def _async_stop_sequence(self) -> None:
-        self.kodi.stop_ui()
-        await asyncio.sleep(4)
-        self.engine.stop()
+        self.handle_stop()
 
     def on_server_command(self, payload: ServerCommandPayload) -> None:
         """Handle Volume/Mute commands from the Sendspin server."""
@@ -231,9 +233,9 @@ class SendspinServiceController:
             muted = getattr(command_data, "muted", None)
 
             if vol is not None:
-                self.engine.set_volume(vol)
+                self.playback_engine.set_volume(vol)
             if muted is not None:
-                self.engine.set_mute(muted)
+                self.playback_engine.set_mute(muted)
 
             # Update Kodi UI
             self.kodi.set_volume(vol, muted)

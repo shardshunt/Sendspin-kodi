@@ -2,13 +2,12 @@ import asyncio
 import logging
 import subprocess
 
-import numpy as np
 from aiosendspin.client import SendspinClient
 
 
-class AudioRouter:
+class PulseAudioRouter:
     """
-    Manages PulseAudio virtual sinks and routing.
+    Manages PulseAudio virtual sink and loopback.
     """
 
     def __init__(self):
@@ -117,6 +116,8 @@ class SyncPlaybackEngine:
         self._muted = bool(is_muted)
 
     def _apply_software_volume(self, data: bytes) -> bytes:
+        import numpy as np
+
         if self._muted or self._volume == 0:
             return b"\x00" * len(data)
         if self._volume == 100:
@@ -267,6 +268,8 @@ class SyncPlaybackEngine:
     # --- Audio Scheduling ---
     def _apply_drift_correction(self, data: bytes) -> bytes:
         """Drops or inserts frames based on time servers drift parameter."""
+        import numpy as np
+
         audio_array = np.frombuffer(data, dtype=np.int16).reshape(-1, self._channels)
         num_frames = audio_array.shape[0]
 

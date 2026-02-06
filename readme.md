@@ -12,6 +12,11 @@ This addon was developed with the assistance of AI.
 
 TODO
 
+## Current noted incompatabilities:
+
+- AudioProfiles
+- Librespot
+
 ## Installation
 
 ### 1. Download Dependencies

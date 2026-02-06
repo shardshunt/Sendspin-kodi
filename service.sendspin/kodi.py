@@ -33,6 +33,8 @@ class DummyStreamServer:
         """
         self.port = port
         self.runner = None
+        self.app = None
+        self.site = None
         self.logger = logging.getLogger("sendspin")
 
     def _create_wav_header(self, sample_rate: int = 44100, channels: int = 2, bits: int = 16) -> bytes:
@@ -61,38 +63,46 @@ class DummyStreamServer:
         """
         Aiohttp request handler that streams infinite silence to the client.
         """
-        response = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/basic"})
+        if request.method == "HEAD":
+            return web.Response(status=200, headers={"Content-Type": "audio/wav"})
+
+        response = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/wav"})
         await response.prepare(request)
 
         try:
             header = self._create_wav_header()
             await response.write(header)
-            # Create a 1-second chunk of silence
             silence = b"\x00" * (44100 * 2 * 2 * 2)
-            while True:
+            while self.site is not None:
                 await response.write(silence)
                 await asyncio.sleep(0.1)
         except (ConnectionResetError, ConnectionError, BrokenPipeError, asyncio.CancelledError):
-            pass
+            self.logger.debug("Kodi disconnected from dummy stream.")
         return response
 
     async def start(self) -> None:
         """
         Starts the web server background runner.
         """
-        app = web.Application()
-        app.router.add_get("/sendspin_dummy", self.handle_dummy_audio)
-        self.runner = web.AppRunner(app)
+        self.app = web.Application()
+        self.app.router.add_get("/sendspin_dummy.wav", self.handle_dummy_audio)
+        self.runner = web.AppRunner(self.app)
         await self.runner.setup()
-        site = web.TCPSite(self.runner, "127.0.0.1", self.port)
-        await site.start()
+        self.site = web.TCPSite(self.runner, "127.0.0.1", self.port)
+        await self.site.start()
 
     async def stop(self) -> None:
-        """
-        Shuts down the web server.
-        """
+        """Shuts down the local server by dismantling the site and runner."""
+        if self.site:
+            await self.site.stop()
+            self.site = None
+        if self.app:
+            await self.app.shutdown()
         if self.runner:
             await self.runner.cleanup()
+            self.runner = None
+        self.site = None
+        self.app = None
 
 
 class KodiManager:
@@ -104,19 +114,22 @@ class KodiManager:
     persistence and monitors the system for volume changes made by the user.
     """
 
-    def __init__(self):
+    def __init__(self, stop_callback: Callable[[], None] = None):
         """
         Initializes the manager and internal state tracking.
         """
         self.logger = logging.getLogger("sendspin")
         self.dummy_server = DummyStreamServer()
-        self.player = xbmc.Player()
+        self.player = xbmc.Player(stop_callback=stop_callback)
 
         # Internal state to prevent feedback loops between Kodi and Server
         self.last_known_volume = -1
         self.last_known_muted = None
-        self.monitor_task = None
+        self.volume_monitor_task = None
+        self.playback_monitor_task = None
         self.volume_callback = None
+        self.stop_callback = stop_callback
+        self._is_playing_dummy = False
 
     async def start(self, on_volume_change: Callable[[int, bool], Awaitable[None]]) -> None:
         """
@@ -124,16 +137,21 @@ class KodiManager:
         """
         self.volume_callback = on_volume_change
         await self.dummy_server.start()
-        self.monitor_task = asyncio.create_task(self._monitor_volume_loop())
+        self.volume_monitor_task = asyncio.create_task(self._monitor_volume_loop())
+        self.playback_monitor_task = asyncio.create_task(self._monitor_playback_loop())
 
     async def cleanup(self) -> None:
         """
         Stops all background tasks, dummy servers, and UI playback.
         """
-        if self.monitor_task:
-            self.monitor_task.cancel()
+        if self.volume_monitor_task:
+            self.volume_monitor_task.cancel()
+        if self.playback_monitor_task:
+            self.playback_monitor_task.cancel()
         await self.dummy_server.stop()
         self.stop_ui()
+        await asyncio.sleep(0.5)
+        await self.dummy_server.stop()
 
     # --- UI & Metadata ---
 
@@ -158,14 +176,30 @@ class KodiManager:
 
         if not self.player.isPlaying():
             self.logger.info("Starting dummy playback for UI")
-            self.player.play("http://localhost:9999/sendspin_dummy", list_item)
+            self.player.play("http://localhost:9999/sendspin_dummy.wav", list_item)
+            self._is_playing_dummy = True
 
     def stop_ui(self):
         """
         Stops the Kodi player if it is currently playing the dummy stream.
         """
         if self.player.isPlaying():
-            self.player.stop()
+            get_players_query = {"jsonrpc": "2.0", "method": "Player.GetActivePlayers", "id": 1}
+            response_str = xbmc.executeJSONRPC(json.dumps(get_players_query))
+            response = json.loads(response_str)
+            active_players = response.get("result", [])
+
+            for player in active_players:
+                if player.get("type") == "audio":
+                    stop_query = {
+                        "jsonrpc": "2.0",
+                        "method": "Player.Stop",
+                        "params": {"playerid": player["playerid"]},
+                        "id": 1,
+                    }
+                    xbmc.executeJSONRPC(json.dumps(stop_query))
+                    self.logger.debug(f"Stopped Kodi player {player['playerid']}")
+        self._is_playing_dummy = False
 
     # --- Volume Logic ---
 
@@ -203,6 +237,32 @@ class KodiManager:
             self.last_known_muted = bool(muted)
             state_str = "true" if muted else "false"
             xbmc.executebuiltin(f"SetMute({state_str})")
+
+    async def _monitor_playback_loop(self) -> None:
+        """
+        Background loop that polls for playback state changes.
+        """
+        self.logger.info("Kodi Playback monitor started.")
+        while not xbmc.Monitor().abortRequested():
+            try:
+                # Check if we think we are playing, but the Kodi player says no.
+                is_actually_playing = self.player.isPlaying()
+                if self._is_playing_dummy and not is_actually_playing:
+                    self.logger.info("Playback monitor detected playback has stopped.")
+                    self._is_playing_dummy = False
+                    if self.stop_callback:
+                        self.stop_callback()
+                # Sync our internal state if it's out of sync for any other reason
+                elif not self._is_playing_dummy and is_actually_playing:
+                    self.logger.info("Playback monitor detected playback has started externally.")
+                    self._is_playing_dummy = True
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"Error in playback monitor: {e}")
+
+            await asyncio.sleep(1)  # Poll every second
 
     async def _monitor_volume_loop(self) -> None:
         """
