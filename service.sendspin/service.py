@@ -7,6 +7,7 @@ Uses a Docker-based Sendspin backend for playback and manages Kodi integration.
 
 # system imports
 import os
+import re
 import sys
 import time
 import traceback
@@ -84,12 +85,74 @@ class SendspinServiceController:
         self.is_playing = False
         self.playback_state = PlaybackStateType.STOPPED
 
+    def _build_kodi_audio_alternate_candidates(self, current_device: str) -> list[str]:
+        candidates: list[str] = []
+        device_lower = current_device.lower()
+
+        if "card=" in device_lower and "dev=" in device_lower:
+            match = re.search(r"(alsa:[^|]+card=[^,]+,dev=)(\d+)(.*)", current_device, re.IGNORECASE)
+            if match:
+                prefix = match.group(1)
+                current_dev = int(match.group(2))
+                suffix = match.group(3)
+                for candidate_dev in [0, 1, 2, 3, 5, 6, 7]:
+                    if candidate_dev == current_dev:
+                        continue
+                    candidates.append(f"{prefix}{candidate_dev}{suffix}")
+
+        if "hdmi" in device_lower and "default" not in device_lower:
+            candidates.append("ALSA:default")
+            candidates.append("ALSA:sysdefault")
+
+        if "default" not in device_lower and "dmix" not in device_lower:
+            candidates.append("ALSA:default")
+            candidates.append("ALSA:sysdefault")
+
+        # Deduplicate while preserving order.
+        seen = set()
+        unique_candidates: list[str] = []
+        for candidate in candidates:
+            if candidate not in seen:
+                seen.add(candidate)
+                unique_candidates.append(candidate)
+        return unique_candidates
+
+    def _switch_kodi_audio_to_alternate(self, current_device: str) -> str | None:
+        for candidate in self._build_kodi_audio_alternate_candidates(current_device):
+            if self.kodi.set_audio_output_device(candidate):
+                self.logger.info(f"Switched Kodi audio device to alternate output: {candidate}")
+                return candidate
+            self.logger.debug(f"Kodi audio device change candidate failed: {candidate}")
+        return None
+
     async def setup(self) -> None:
         """Initial setup and connection to Sendspin server."""
 
         current_vol, current_mute = self.kodi.get_current_volume()
+        kodi_audio_device = self.kodi.get_audio_output_device()
+        if kodi_audio_device:
+            self.logger.info(f"Detected Kodi audio output device: '{kodi_audio_device}'")
+            self.playback_engine.preferred_device_name = kodi_audio_device
 
-        # Start the Docker-based playback backend only.
+            devices = self.playback_engine._list_audio_devices()
+            device_conflict = bool(self.playback_engine._find_device_by_name(kodi_audio_device, devices))
+
+            if device_conflict or kodi_audio_device.lower().startswith("alsa:"):
+                self.logger.info(
+                    "Kodi is using an ALSA audio output device. Releasing the device before starting sendspin."
+                )
+                alternate = self._switch_kodi_audio_to_alternate(kodi_audio_device)
+                if alternate:
+                    await asyncio.sleep(1)
+                    new_device = self.kodi.get_audio_output_device()
+                    self.logger.info(f"Kodi audio output switched to: '{new_device or alternate}'")
+                else:
+                    self.logger.warning(
+                        "Failed to switch Kodi to an alternate audio device; sendspin may still conflict with Kodi audio output."
+                    )
+        else:
+            self.logger.info("Could not detect Kodi audio output device; falling back to auto-selection.")
+
         self.logger.info("Starting Docker Sendspin backend container.")
         self.playback_engine.start()
 

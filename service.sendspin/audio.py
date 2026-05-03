@@ -20,6 +20,7 @@ class DockerPlaybackEngine:
         self.image_name = image_name
         self.container_name = container_name
         self.audio_device = audio_device
+        self.preferred_device_name: str | None = None
         self.config_dir = config_dir
 
     def _docker_available(self) -> bool:
@@ -39,10 +40,7 @@ class DockerPlaybackEngine:
         result = self._run_docker(["ps", "-q", "-f", f"name={self.container_name}"])
         return bool(result and result.stdout.strip())
 
-    def _detect_audio_device(self) -> str:
-        if self.audio_device:
-            return self.audio_device
-
+    def _list_audio_devices(self) -> list[tuple[int, str]]:
         result = self._run_docker(
             [
                 "run",
@@ -55,8 +53,8 @@ class DockerPlaybackEngine:
             ]
         )
         if not result or result.returncode != 0:
-            self.logger.warning("Could not query container audio devices; defaulting to device 0.")
-            return "0"
+            self.logger.warning("Could not query container audio devices.")
+            return []
 
         devices: list[tuple[int, str]] = []
         pattern = re.compile(r"^\s*\[(\d+)\]\s+(.+?)\s*$")
@@ -64,10 +62,135 @@ class DockerPlaybackEngine:
             match = pattern.match(line)
             if match:
                 devices.append((int(match.group(1)), match.group(2).strip()))
+        return devices
 
+    def _find_device_by_name(self, device_name: str, devices: list[tuple[int, str]]) -> str | None:
+        if not device_name:
+            return None
+
+        mapped = self._find_device_by_kodi_alsa_name(device_name, devices)
+        if mapped:
+            return mapped
+
+        normalized = device_name.lower()
+        exact = next((str(index) for index, name in devices if name.lower() == normalized), None)
+        if exact:
+            return exact
+
+        contains = next((str(index) for index, name in devices if normalized in name.lower()), None)
+        if contains:
+            return contains
+
+        starts = next((str(index) for index, name in devices if name.lower().startswith(normalized)), None)
+        if starts:
+            return starts
+
+        return None
+
+    def _find_device_by_kodi_alsa_name(self, device_name: str, devices: list[tuple[int, str]]) -> str | None:
+        name_lower = device_name.lower()
+        match = re.search(r"card=([^,|]+),dev=(\d+)", name_lower)
+        if not match:
+            return None
+
+        card_alias = match.group(1).strip()
+        dev_index = int(match.group(2).strip())
+        card_number = self._resolve_alsa_card_number(card_alias)
+        if card_number is None:
+            return None
+
+        hw_device = self._resolve_alsa_hw_device(card_number, dev_index)
+        if hw_device is None:
+            return None
+
+        target_pattern = f"hw:{card_number},{hw_device}"
+        return next((str(index) for index, name in devices if target_pattern in name.lower()), None)
+
+    def _resolve_alsa_card_number(self, card_alias: str) -> int | None:
+        result = self._run_docker(
+            [
+                "run",
+                "--rm",
+                "--device",
+                "/dev/snd:/dev/snd",
+                "--entrypoint",
+                "sh",
+                self.image_name,
+                "-c",
+                "cat /proc/asound/cards",
+            ]
+        )
+        if not result or result.returncode != 0:
+            return None
+
+        for line in result.stdout.splitlines():
+            match = re.match(r"^\s*(\d+)\s*\[(.+?)\]:", line)
+            if not match:
+                continue
+            index = int(match.group(1))
+            alias = match.group(2).strip().lower()
+            if alias == card_alias.lower() or card_alias.lower() in alias:
+                return index
+        return None
+
+    def _resolve_alsa_hw_device(self, card_number: int, dev_index: int) -> int | None:
+        result = self._run_docker(
+            [
+                "run",
+                "--rm",
+                "--device",
+                "/dev/snd:/dev/snd",
+                "--entrypoint",
+                "sh",
+                self.image_name,
+                "-c",
+                "cat /proc/asound/devices",
+            ]
+        )
+        if not result or result.returncode != 0:
+            return None
+
+        device_numbers: list[int] = []
+        for line in result.stdout.splitlines():
+            if "digital audio playback" not in line.lower():
+                continue
+            match = re.match(r"^\s*\d+:\s*\[\s*" + re.escape(str(card_number)) + r"-(\d+)\]", line)
+            if not match:
+                continue
+            device_numbers.append(int(match.group(1)))
+
+        if not device_numbers:
+            return None
+        device_numbers.sort()
+        if len(device_numbers) <= dev_index:
+            return None
+        return device_numbers[dev_index]
+
+    def _find_alternate_device(self, exclude_device_name: str, devices: list[tuple[int, str]]) -> str | None:
+        exclude_norm = exclude_device_name.lower()
+        for _index, name in devices:
+            lower_name = name.lower()
+            if lower_name == exclude_norm or exclude_norm in lower_name:
+                continue
+            if "dmix" in lower_name or "default" in lower_name:
+                continue
+            return name
+        return next((name for _, name in devices if "default" in name.lower()), None)
+
+    def _detect_audio_device(self) -> str:
+        if self.audio_device:
+            return self.audio_device
+
+        devices = self._list_audio_devices()
         if not devices:
             self.logger.warning("No audio devices were detected from sendspin; defaulting to device 0.")
             return "0"
+
+        if self.preferred_device_name:
+            selected = self._find_device_by_name(self.preferred_device_name, devices)
+            if selected:
+                self.logger.info(f"Matched Kodi audio output to sendspin audio device: {selected}")
+                return selected
 
         def find_first(match_fn):
             for index, name in devices:
@@ -75,7 +198,6 @@ class DockerPlaybackEngine:
                     return str(index)
             return None
 
-        # Prefer a Panasonic HDMI device when available.
         selected = find_first(lambda n: "panasonic" in n and "hdmi" in n)
         if selected:
             self.logger.info(f"Auto-selected sendspin audio device by name: {selected}")
@@ -88,7 +210,7 @@ class DockerPlaybackEngine:
 
         selected = find_first(lambda n: "hdmi" in n and "hw:1" in n)
         if selected:
-            self.logger.info(f"Auto-selected sendspin HDMI audio device: {selected}")
+            self.logger.info(f"Auto-selected sendpin HDMI audio device: {selected}")
             return selected
 
         selected = find_first(lambda n: n == "dmix")

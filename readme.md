@@ -42,7 +42,7 @@ For this addon to mix audio correctly, Kodi must use the PulseAudio backend.
 2. Check the Audio output device setting.
 3. Ensure the selected device name begins with PULSE: (e.g., PULSE: Default).
 
-> NOTE: The Docker playback backend can now use ALSA directly by exposing `/dev/snd` into the container and selecting the ALSA device. The service will automatically detect the best available HDMI audio device by name when possible.
+> NOTE: The Docker playback backend can now use ALSA directly by exposing `/dev/snd` into the container and selecting the ALSA device. The addon service can auto-detect Kodi's selected output device, move Kodi to an alternate output, and launch the Docker container using the matching ALSA device.
 
 #### fix no pulse audio (for libreElec)
 

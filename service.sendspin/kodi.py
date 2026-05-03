@@ -221,6 +221,47 @@ class KodiManager:
             self.logger.debug(f"Failed to get properties via JSON-RPC: {e}")
             return 100, False
 
+    def _get_setting_value(self, setting_id: str) -> str | None:
+        """Reads a Kodi setting value using JSON-RPC."""
+        try:
+            query = {
+                "jsonrpc": "2.0",
+                "method": "Settings.GetSettingValue",
+                "params": {"setting": setting_id},
+                "id": 1,
+            }
+            response_str = xbmc.executeJSONRPC(json.dumps(query))
+            response = json.loads(response_str)
+            return response.get("result", {}).get("value")
+        except Exception as e:
+            self.logger.debug(f"Failed to read Kodi setting '{setting_id}': {e}")
+            return None
+
+    def _set_setting_value(self, setting_id: str, value: str) -> bool:
+        """Sets a Kodi setting value using JSON-RPC."""
+        try:
+            query = {
+                "jsonrpc": "2.0",
+                "method": "Settings.SetSettingValue",
+                "params": {"setting": setting_id, "value": value},
+                "id": 1,
+            }
+            response_str = xbmc.executeJSONRPC(json.dumps(query))
+            response = json.loads(response_str)
+            return response.get("result", False) is True
+        except Exception as e:
+            self.logger.debug(f"Failed to write Kodi setting '{setting_id}': {e}")
+            return False
+
+    def get_audio_output_device(self) -> str | None:
+        """Returns Kodi's currently selected audio output device."""
+        return self._get_setting_value("audiooutput.audiodevice")
+
+    def set_audio_output_device(self, device_name: str) -> bool:
+        """Sets Kodi's audio output device."""
+        self.logger.info(f"Switching Kodi audio output device to: {device_name}")
+        return self._set_setting_value("audiooutput.audiodevice", device_name)
+
     def set_volume(self, volume: int = None, muted: bool = None) -> None:
         """
         Sets the Kodi system volume and/or mute state.
