@@ -2,7 +2,7 @@
 """
 Sendspin Service for Kodi.
 
-Uses aiosendspin to connect to a Sendspin server and route audio via a pulseaudio virtual sink
+Uses a Docker-based Sendspin backend for playback and manages Kodi integration.
 """
 
 # system imports
@@ -28,11 +28,10 @@ import logger
 import xbmcaddon
 
 # aiosendspin imports
-from aiosendspin.client import AudioFormat, ClientListener, SendspinClient
+from aiosendspin.client import AudioFormat
 from aiosendspin.models.core import ServerCommandPayload, ServerStatePayload, StreamEndMessage, StreamStartMessage
-from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.types import AudioCodec, PlaybackStateType, PlayerCommand, PlayerStateType, Roles
-from audio import PulseAudioRouter, SyncPlaybackEngine
+from aiosendspin.models.types import PlaybackStateType, PlayerCommand
+from audio import DockerPlaybackEngine
 from kodi import KodiManager
 
 import xbmc
@@ -68,10 +67,12 @@ class SendspinServiceController:
 
     def __init__(self) -> None:
         self.logger = logging.getLogger("sendspin")
-        self.playback_engine = SyncPlaybackEngine(debug_logging=True)
-        self.audio_router = PulseAudioRouter()
+        self.playback_engine = DockerPlaybackEngine(
+            image_name=xbmcaddon.Addon().getSetting("docker_image_name") or "sendspin-local",
+            container_name=xbmcaddon.Addon().getSetting("docker_container_name") or "sendspin-player",
+            config_dir=xbmcaddon.Addon().getSetting("docker_config_dir") or "/storage/.config/sendspin",
+        )
         self.kodi = KodiManager(stop_callback=self.handle_stop)
-        self.sendspin_client: SendspinClient = None
 
         # Audio Configuration
         self.sample_rate_max = 48000
@@ -88,57 +89,9 @@ class SendspinServiceController:
 
         current_vol, current_mute = self.kodi.get_current_volume()
 
-        # Sendspin Player Support Declaration
-        self.player_support = ClientHelloPlayerSupport(
-            supported_formats=[
-                SupportedAudioFormat(
-                    AudioCodec.PCM,
-                    channels=2,
-                    sample_rate=44100,
-                    bit_depth=16,
-                )
-            ],
-            buffer_capacity=self.buffer_bytes,
-            supported_commands=[PlayerCommand.VOLUME],
-        )
-
-        # initialize client
-        self.client = SendspinClient(
-            client_id=CLIENT_ID,
-            client_name=CLIENT_NAME,
-            roles=[Roles.PLAYER, Roles.METADATA],
-            player_support=self.player_support,
-            static_delay_ms=-750,
-            initial_volume=current_vol,
-            initial_muted=current_mute,
-        )
-
-        self.playback_engine.set_time_provider(self.client)
-
-        handlers = {
-            "add_stream_start_listener": self.on_stream_start,
-            "add_stream_end_listener": self.on_stream_end,
-            "add_server_command_listener": self.on_server_command,
-            "add_metadata_listener": self.on_metadata_update,
-        }
-        logger.setup_client_listeners(
-            self.client, handlers, log=self.logger, mode="all", exclude="add_audio_chunk_listener"
-        )
-        self.client.add_audio_chunk_listener(self.on_audio_chunk)
-
-        async def handle_incoming_connection(ws):
-            await self.client.attach_websocket(ws)
-            info = self.client.server_info
-            self.logger.info(f"Connected to Sendspin server. Name: {info.name} Inital Volume: {current_vol}")
-            done = asyncio.Event()
-            self.client.add_disconnect_listener(done.set)
-            await done.wait()
-
-        self.listener = ClientListener(
-            client_id=CLIENT_ID, on_connection=handle_incoming_connection, advertise_mdns=True
-        )
-        self.logger.info("Starting Sendspin listener.")
-        await self.listener.start()
+        # Start the Docker-based playback backend only.
+        self.logger.info("Starting Docker Sendspin backend container.")
+        self.playback_engine.start()
 
     async def run(self) -> None:
         """Main execution loop."""
@@ -152,10 +105,7 @@ class SendspinServiceController:
     async def cleanup(self) -> None:
         """Clean shutdown. TODO: Needs work."""
         self.playback_engine.stop()
-        self.audio_router.cleanup()
         await self.kodi.cleanup()
-        if self.client:
-            await self.client.disconnect()
         self.logger.info("Shutting down Sendspin service...")
 
     # --- Kodi Event Handlers  ---
@@ -164,13 +114,8 @@ class SendspinServiceController:
         """Called by KodiManager when the user changes volume locally."""
         self.logger.debug(f"Syncing local volume: Vol={volume}, Mute={muted}")
 
-        # Update Audio Engine
-        self.playback_engine.set_volume(volume)
-        self.playback_engine.set_mute(muted)
-
-        # Push to Server
-        if self.client:
-            await self.client.send_player_state(state=PlayerStateType.SYNCHRONIZED, volume=volume, muted=muted)
+        self.logger.debug("Docker backend active; local volume changes are managed by the container or PulseAudio.")
+        # The Docker Sendspin playback service should handle audio level/mute.
 
     def handle_stop(self) -> None:
         """Stop handler triggered by Kodi Player events."""
@@ -189,23 +134,12 @@ class SendspinServiceController:
             f"Stream Start Received. Sample Rate: {message.payload.player.sample_rate}, Channels: {message.payload.player.channels}, Bit Depth: {message.payload.player.bit_depth}"
         )
         self.is_playing = True
-
-        virtual_sink = self.audio_router.setup_routing()
-        self.playback_engine.start(
-            rate=message.payload.player.sample_rate,
-            channels=message.payload.player.channels,
-            bit_depth=message.payload.player.bit_depth,
-            target_sink=virtual_sink,
-        )
         self.playback_state = PlaybackStateType.PLAYING
-        vol, muted = self.kodi.get_current_volume()
-        self.playback_engine.set_volume(vol)
-        self.playback_engine.set_mute(muted)
-        asyncio.create_task(self.client.send_player_state(state=PlayerStateType.SYNCHRONIZED, volume=vol, muted=muted))
 
     def on_audio_chunk(self, server_timestamp_us: int, audio_data: bytes, audio_format: AudioFormat) -> None:
         """Handles incoming audio data chunks."""
-        self.playback_engine.play_chunk(server_timestamp_us, audio_data)
+        # Docker backend does not consume local audio chunks.
+        return
 
     def on_metadata_update(self, payload: ServerStatePayload) -> None:
         """Called when track info (Artist/Title/Art) changes."""

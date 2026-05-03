@@ -12,6 +12,9 @@
     <category label="Client">
         <setting id="client_id" type="text" label="Client ID" default="kodi-sendspin-client" />
         <setting id="client_name_" type="text" label="Client Name" default="Kodi" />
+        <setting id="docker_container_name" type="text" label="Docker container name" default="sendspin-player" />
+        <setting id="docker_image_name" type="text" label="Docker image name" default="sendspin-local" />
+        <setting id="docker_config_dir" type="text" label="Docker config directory" default="/storage/.config/sendspin" />
     </category>
 
     <category label="Logging">
