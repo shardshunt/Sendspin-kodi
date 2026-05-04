@@ -38,6 +38,10 @@ async def main_async(controller):
         # so normal Sendspin sessions do not need frequent seek resets.
         rewind_before_end_seconds = 5.0
         poll_interval_seconds = 0.5
+        volume_poll_interval_seconds = 1.0
+        last_volume_poll_time = 0.0
+        last_seen_sendspin_volume = None
+        last_seen_kodi_volume_state = None
 
         # Setup Metadata
         list_item = xbmcgui.ListItem("Sendspin Active")
@@ -63,6 +67,38 @@ async def main_async(controller):
         log.info("Entering persistent audio loop. ALSA sink is locked.")
 
         while not monitor.abortRequested():
+            loop_time = asyncio.get_running_loop().time()
+            if loop_time - last_volume_poll_time >= volume_poll_interval_seconds:
+                last_volume_poll_time = loop_time
+                sendspin_volume = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    controller.get_sendspin_volume,
+                )
+                kodi_volume_state = controller.get_kodi_volume_state()
+
+                if last_seen_sendspin_volume is None:
+                    last_seen_sendspin_volume = sendspin_volume
+                elif sendspin_volume is not None and sendspin_volume != last_seen_sendspin_volume:
+                    last_seen_sendspin_volume = sendspin_volume
+                    kodi_volume = controller.apply_sendspin_volume_to_kodi(sendspin_volume)
+                    kodi_volume_state = controller.get_kodi_volume_state()
+                    last_seen_kodi_volume_state = kodi_volume_state
+                    log.info(
+                        f"Applied Sendspin volume to Kodi: sendspin_volume={sendspin_volume} kodi_volume={kodi_volume}"
+                    )
+
+                if last_seen_kodi_volume_state is None:
+                    last_seen_kodi_volume_state = kodi_volume_state
+                elif kodi_volume_state != last_seen_kodi_volume_state:
+                    last_seen_kodi_volume_state = kodi_volume_state
+                    mapped_volume = controller.apply_kodi_volume_to_sendspin(kodi_volume_state)
+                    log.info(
+                        "Kodi volume changed: "
+                        f"kodi_volume={kodi_volume_state['volume']} "
+                        f"muted={kodi_volume_state['muted']} "
+                        f"mapped_sendspin_volume={mapped_volume}"
+                    )
+
             if not player.isPlaying():
                 log.info("Dummy playback stopped by user/intervention. Exiting loop.")
                 break

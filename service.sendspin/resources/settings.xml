@@ -16,6 +16,7 @@
         <setting id="docker_image_name" type="text" label="Docker image name" default="sendspin-local" />
         <setting id="docker_config_dir" type="text" label="Docker config directory" default="/storage/.config/sendspin" />
         <setting id="audio_device_override" type="text" label="Audio device ID override (leave empty to auto-detect)" default="" />
+        <setting id="volume_scale" type="number" label="Kodi to Sendspin volume scale" default="0.3" />
         <!-- New Fallback Setting -->
         <setting id="fallback_audio_device" type="text" label="Fallback audio device ID" default="8" />
     </category>

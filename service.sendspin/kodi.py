@@ -33,3 +33,34 @@ class KodiManager:
         }
         response = json.loads(xbmc.executeJSONRPC(json.dumps(query)))
         return response.get("result")
+
+    def get_volume_state(self) -> dict:
+        query = {
+            "jsonrpc": "2.0",
+            "method": "Application.GetProperties",
+            "params": {"properties": ["volume", "muted"]},
+            "id": 1,
+        }
+        response = json.loads(xbmc.executeJSONRPC(json.dumps(query)))
+        result = response.get("result", {})
+        return {"volume": int(result.get("volume", 100)), "muted": bool(result.get("muted", False))}
+
+    def set_volume(self, volume: int) -> bool:
+        query = {
+            "jsonrpc": "2.0",
+            "method": "Application.SetVolume",
+            "params": {"volume": max(0, min(100, int(volume)))},
+            "id": 1,
+        }
+        response = json.loads(xbmc.executeJSONRPC(json.dumps(query)))
+        return "result" in response
+
+    def set_muted(self, muted: bool) -> bool:
+        query = {
+            "jsonrpc": "2.0",
+            "method": "Application.SetMute",
+            "params": {"mute": bool(muted)},
+            "id": 1,
+        }
+        response = json.loads(xbmc.executeJSONRPC(json.dumps(query)))
+        return "result" in response

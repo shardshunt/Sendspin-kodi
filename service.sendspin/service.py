@@ -10,13 +10,31 @@ from kodi import KodiManager
 class SendspinServiceController:
     def __init__(self) -> None:
         self.logger = logging.getLogger("sendspin")
+        addon = xbmcaddon.Addon()
         self.playback_engine = DockerPlaybackEngine(
-            image_name=xbmcaddon.Addon().getSetting("docker_image_name") or "sendspin-local",
-            container_name=xbmcaddon.Addon().getSetting("docker_container_name") or "sendspin-player",
-            config_dir=xbmcaddon.Addon().getSetting("docker_config_dir") or "/storage/.config/sendspin",
+            image_name=addon.getSetting("docker_image_name") or "sendspin-local",
+            container_name=addon.getSetting("docker_container_name") or "sendspin-player",
+            config_dir=addon.getSetting("docker_config_dir") or "/storage/.config/sendspin",
+            volume_scale=self._get_volume_scale(addon),
         )
         self.kodi = KodiManager()
         self.original_kodi_device = None
+
+    def _get_volume_scale(self, addon) -> float:
+        fallback = 0.3
+        setting = addon.getSetting("volume_scale") or str(fallback)
+        try:
+            scale = float(setting)
+        except ValueError:
+            self.logger.warning("Invalid volume scale setting '%s'; using %s", setting, fallback)
+            return fallback
+
+        if scale <= 0:
+            self.logger.warning("Non-positive volume scale setting '%s'; using %s", setting, fallback)
+            return fallback
+
+        self.logger.info("Using Kodi to Sendspin volume scale: %s", scale)
+        return scale
 
     def _get_audio_device_id(self, device_string: str) -> str:
         """Maps Kodi strings to ALSA indices by matching both hardware numbers and port labels."""
@@ -121,6 +139,9 @@ class SendspinServiceController:
         self.original_kodi_device = self.kodi.get_audio_output_device()
         self.logger.info(f"Captured original audio device: {self.original_kodi_device}")
 
+        kodi_volume = self.kodi.get_volume_state()
+        self.playback_engine.configure_volume_sync(kodi_volume["volume"], kodi_volume["muted"])
+
         # Extract audio device ID for Docker
         override = xbmcaddon.Addon().getSetting("audio_device_override")
         if override:
@@ -145,6 +166,24 @@ class SendspinServiceController:
                 if self.kodi.set_audio_output_device(candidate):
                     self.logger.info(f"Switched Kodi audio to {candidate} to free hardware.")
                     break
+
+    def get_kodi_volume_state(self):
+        return self.kodi.get_volume_state()
+
+    def get_sendspin_volume(self):
+        return self.playback_engine.read_volume_state()
+
+    def apply_sendspin_volume_to_kodi(self, volume):
+        kodi_volume = self.playback_engine.sendspin_to_kodi_volume(volume)
+        self.kodi.set_muted(kodi_volume == 0)
+        self.kodi.set_volume(kodi_volume)
+        return kodi_volume
+
+    def apply_kodi_volume_to_sendspin(self, volume_state):
+        return self.playback_engine.write_kodi_volume_to_settings(
+            volume_state["volume"],
+            volume_state["muted"],
+        )
 
     async def cleanup(self) -> None:
         # Stop container and restore audio device[cite: 1, 3, 5]
