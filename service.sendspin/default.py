@@ -2,51 +2,87 @@ import asyncio
 import os
 import sys
 
+import xbmcaddon
 import xbmcgui
+import xbmcplugin
 
-# Setup paths for embedded libraries[cite: 5]
-addon_dir = os.path.dirname(os.path.abspath(__file__))
-lib_path = os.path.join(addon_dir, "resources", "lib")
-if os.path.isdir(lib_path) and lib_path not in sys.path:
-    sys.path.insert(0, lib_path)
-if addon_dir not in sys.path:
-    sys.path.insert(0, addon_dir)
+import xbmc
+
+ADDON = xbmcaddon.Addon()
+ADDON_ID = ADDON.getAddonInfo("id")
+ADDON_PATH = ADDON.getAddonInfo("path")
+
+# Setup paths for embedded libraries
+LIB_PATH = os.path.join(ADDON_PATH, "resources", "lib")
+if os.path.isdir(LIB_PATH) and LIB_PATH not in sys.path:
+    sys.path.insert(0, LIB_PATH)
 
 import logger  # noqa: E402
 from service import SendspinServiceController  # noqa: E402
 
 
-def run_script():
-    # Initialize logger first to ensure startup is captured
+async def main_async(controller):
+    """The async lifecycle with restored logging"""
+    # 1. Initialize your custom logger immediately
     log = logger.init_logger()
-    log.info("--- Sendspin Script Starting ---")
-
-    service = SendspinServiceController()
-    loop = asyncio.new_event_loop()
+    log.info("--- Sendspin Persistent Session Starting ---")
 
     try:
-        # Run setup and start background tasks[cite: 5]
-        loop.run_until_complete(service.setup())
+        log.info("Initializing Docker backend...")
+        await controller.setup()
 
-        # Display a modal dialog to keep the script running
-        dialog = xbmcgui.Dialog()
-        log.info("Displaying 'Running' dialog to user.")
+        monitor = xbmc.Monitor()
+        player = xbmc.Player()
+        dummy_path = os.path.join(ADDON_PATH, "resources", "silent.mp3")
 
-        # This will block the script here until the user clicks "OK"[cite: 2]
-        dialog.ok(
-            "Sendspin",
-            "Sendspin is active and the Docker container is running.\n\nClick OK to stop playback and restore audio.",
-        )
+        # 2. Setup Metadata & Start Playback
+        list_item = xbmcgui.ListItem("Sendspin Active")
+        music_tag = list_item.getMusicInfoTag()
+        music_tag.setTitle("Sendspin Audio")
+        music_tag.setArtist("Docker System")
+        player.play(dummy_path, list_item)
+
+        # Give Kodi a moment to engage the player
+        xbmc.sleep(2000)
+        xbmc.executebuiltin("Action(FullScreen)")
+
+        log.info("Entering persistent audio loop. ALSA sink should be locked.")
+
+        while not monitor.abortRequested():
+            if not player.isPlaying():
+                log.info("Playback stopped manually, exiting loop.")
+                break
+
+            if monitor.waitForAbort(1):
+                break
 
     except Exception as e:
-        log.error(f"Script encountered an error: {e}")
+        log.error(f"Async loop encountered an error: {e}")
     finally:
-        # Ensure cleanup always runs[cite: 5]
         log.info("Starting cleanup and audio restoration.")
-        loop.run_until_complete(service.cleanup())
-        loop.close()
-        log.info("--- Sendspin Script Finished ---")
+        await controller.cleanup()
+        log.info("--- Sendspin Persistent Session Finished ---")
 
 
 if __name__ == "__main__":
-    run_script()
+    # Prevent GUI hangs by resolving the directory call immediately
+    try:
+        handle = int(sys.argv[1])
+        xbmcplugin.endOfDirectory(handle, succeeded=True, cacheToDisc=False)
+    except (IndexError, ValueError):
+        pass
+
+    # Multi-instance guard[cite: 3]
+    win = xbmcgui.Window(10000)
+    if win.getProperty(f"{ADDON_ID}.running") == "true":
+        sys.exit()
+
+    win.setProperty(f"{ADDON_ID}.running", "true")
+
+    try:
+        controller = SendspinServiceController()
+        asyncio.run(main_async(controller))
+    except Exception as e:
+        xbmc.log(f"[Sendspin] Fatal Startup Error: {e}", xbmc.LOGERROR)
+    finally:
+        win.clearProperty(f"{ADDON_ID}.running")

@@ -10,7 +10,7 @@ This addon was developed with the assistance of AI.
 
 ## How it Works
 
-Instead of running heavy audio processing libraries inside Kodi's Python environment, this addon delegates playback to a dedicated Sendspin Docker container (`sendspin-local`).
+Instead of running the audio processing libraries inside Kodi's Python environment, this addon delegates playback to a dedicated Sendspin Docker container (`sendspin-local`).
 
 When activated, the addon:
 1. Detects the physical ALSA hardware device currently being used by Kodi.
@@ -18,15 +18,9 @@ When activated, the addon:
 3. Launches the Docker container, passing it the exact ALSA hardware index via `/dev/snd`.
 4. Restores Kodi's original audio settings when playback is stopped.
 
-## Current noted incompatibilities:
-
-- AudioProfiles
-- Librespot
-
 ## Requirements
 
-- **Docker**: The host system (e.g., LibreELEC) must have Docker installed and running.
-- **Sendspin Image**: The `sendspin-local` Docker image must be available on the host machine.
+- **Docker**: The host system must have Docker installed and running (e.g., Docker Addon for LibreELEC).
 
 ## Installation
 
