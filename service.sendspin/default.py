@@ -22,8 +22,7 @@ from service import SendspinServiceController  # noqa: E402
 
 
 async def main_async(controller):
-    """The async lifecycle with improved window focusing and player detection"""
-    # 1. Initialize your custom logger immediately
+    """The async lifecycle with dummy playback kept alive by pre-EOF seeking."""
     log = logger.init_logger()
     log.info("--- Sendspin Persistent Session Starting ---")
 
@@ -35,42 +34,58 @@ async def main_async(controller):
         player = xbmc.Player()
         dummy_path = os.path.join(ADDON_PATH, "resources", "silent.mp3")
 
-        # 2. Setup Metadata & Start Playback
+        # Future improvement: make this dummy track long-lived, e.g. around an hour,
+        # so normal Sendspin sessions do not need frequent seek resets.
+        rewind_before_end_seconds = 5.0
+        poll_interval_seconds = 0.5
+
+        # Setup Metadata
         list_item = xbmcgui.ListItem("Sendspin Active")
         music_tag = list_item.getMusicInfoTag()
         music_tag.setTitle("Sendspin Audio")
         music_tag.setArtist("Docker System")
 
-        log.info("Starting dummy playback to lock session...")
-        player.play(dummy_path, list_item)
+        async def start_playback():
+            """Force restart playback and GUI focus, safely yielding to the event loop."""
+            log.info("Starting dummy playback track...")
+            player.play(dummy_path, list_item)
 
-        # 3. Wait-state for active playback
-        # This loop waits up to 5 seconds for the player to engage.
-        # It prevents the 'ActivateWindow' command from firing too early.
-        retries = 0
-        while not player.isPlaying() and retries < 50:
-            if monitor.abortRequested():
-                return
-            xbmc.sleep(100)
-            retries += 1
+            # Non-blocking delay to allow Kodi to initialize the ALSA sink
+            await asyncio.sleep(1.0)
 
-        if player.isPlaying():
-            log.info("Playback detected. Forcing focus to Music Visualization.")
-            # 'ActivateWindow(visualisation)' is deterministic and avoids the
-            # toggle behavior of 'Action(FullScreen)'.
+            # Clear modal dialogs that block window activation
+            xbmc.executebuiltin("Dialog.Close(all, true)")
             xbmc.executebuiltin("ActivateWindow(visualisation)")
-        else:
-            log.warning("Player failed to start within timeout; skipping focus.")
 
-        log.info("Entering persistent audio loop. ALSA sink should be locked.")
+        # Initial Playback
+        await start_playback()
+
+        log.info("Entering persistent audio loop. ALSA sink is locked.")
 
         while not monitor.abortRequested():
             if not player.isPlaying():
-                log.info("Playback stopped manually, exiting loop.")
+                log.info("Dummy playback stopped by user/intervention. Exiting loop.")
                 break
 
-            if monitor.waitForAbort(1):
-                break
+            try:
+                total_time = player.getTotalTime()
+                current_time = player.getTime()
+            except RuntimeError as e:
+                log.warning(f"Could not read dummy playback position: {e}")
+                await asyncio.sleep(poll_interval_seconds)
+                continue
+
+            if total_time > rewind_before_end_seconds:
+                remaining_time = total_time - current_time
+                if remaining_time <= rewind_before_end_seconds:
+                    # Future improvement: when Sendspin exposes active track metadata,
+                    # seek this dummy player to match the real song position instead.
+                    log.info(f"Dummy track nearing EOF ({current_time:.1f}/{total_time:.1f}s). Seeking back to start.")
+                    player.seekTime(0)
+                    await asyncio.sleep(1.0)
+                    continue
+
+            await asyncio.sleep(poll_interval_seconds)
 
     except Exception as e:
         log.error(f"Async loop encountered an error: {e}")
@@ -88,7 +103,7 @@ if __name__ == "__main__":
     except (IndexError, ValueError):
         pass
 
-    # Multi-instance guard to prevent overlapping Docker commands
+    # Multi-instance guard to prevent multiple controllers fighting for ALSA
     win = xbmcgui.Window(10000)
     if win.getProperty(f"{ADDON_ID}.running") == "true":
         sys.exit()
