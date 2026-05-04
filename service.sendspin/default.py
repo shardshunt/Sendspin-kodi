@@ -22,7 +22,7 @@ from service import SendspinServiceController  # noqa: E402
 
 
 async def main_async(controller):
-    """The async lifecycle with restored logging"""
+    """The async lifecycle with improved window focusing and player detection"""
     # 1. Initialize your custom logger immediately
     log = logger.init_logger()
     log.info("--- Sendspin Persistent Session Starting ---")
@@ -40,11 +40,27 @@ async def main_async(controller):
         music_tag = list_item.getMusicInfoTag()
         music_tag.setTitle("Sendspin Audio")
         music_tag.setArtist("Docker System")
+
+        log.info("Starting dummy playback to lock session...")
         player.play(dummy_path, list_item)
 
-        # Give Kodi a moment to engage the player
-        xbmc.sleep(2000)
-        xbmc.executebuiltin("Action(FullScreen)")
+        # 3. Wait-state for active playback
+        # This loop waits up to 5 seconds for the player to engage.
+        # It prevents the 'ActivateWindow' command from firing too early.
+        retries = 0
+        while not player.isPlaying() and retries < 50:
+            if monitor.abortRequested():
+                return
+            xbmc.sleep(100)
+            retries += 1
+
+        if player.isPlaying():
+            log.info("Playback detected. Forcing focus to Music Visualization.")
+            # 'ActivateWindow(visualisation)' is deterministic and avoids the
+            # toggle behavior of 'Action(FullScreen)'.
+            xbmc.executebuiltin("ActivateWindow(visualisation)")
+        else:
+            log.warning("Player failed to start within timeout; skipping focus.")
 
         log.info("Entering persistent audio loop. ALSA sink should be locked.")
 
@@ -72,7 +88,7 @@ if __name__ == "__main__":
     except (IndexError, ValueError):
         pass
 
-    # Multi-instance guard[cite: 3]
+    # Multi-instance guard to prevent overlapping Docker commands
     win = xbmcgui.Window(10000)
     if win.getProperty(f"{ADDON_ID}.running") == "true":
         sys.exit()
