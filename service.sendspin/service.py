@@ -1,71 +1,13 @@
-#!/usr/bin/env python3
-"""
-Sendspin Service for Kodi.
-
-Uses a Docker-based Sendspin backend for playback and manages Kodi integration.
-"""
-
-# system imports
-import os
-import re
-import sys
-import time
-import traceback
-
-# adjust sys.path for embedded Kodi environment
-if (
-    os.path.isdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "lib"))
-    and os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "lib") not in sys.path
-):
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "lib"))
-if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-# standard library imports
-import asyncio
 import logging
+import re
+import subprocess
 
-import logger
 import xbmcaddon
-
-# aiosendspin imports
-from aiosendspin.client import AudioFormat
-from aiosendspin.models.core import ServerCommandPayload, ServerStatePayload, StreamEndMessage, StreamStartMessage
-from aiosendspin.models.types import PlaybackStateType, PlayerCommand
 from audio import DockerPlaybackEngine
 from kodi import KodiManager
 
-import xbmc
-
-
-class ThrottledLogger:
-    """Helper to prevent log flooding during high-frequency events."""
-
-    def __init__(self, interval: int = 1) -> None:
-        self.interval = interval
-        self.last_log_time = 0
-
-    def log(self, message: str) -> None:
-        current_time = time.time()
-        if current_time - self.last_log_time >= self.interval:
-            xbmc.log(f"[Sendspin-Debug] {message}", level=xbmc.LOGDEBUG)
-            self.last_log_time = current_time
-
-
-throttled_log = ThrottledLogger()
-
-# --- CONFIGURATION & UTILITIES ---
-
-CLIENT_ID = xbmcaddon.Addon().getSetting("client_id") or "kodi-sendspin-client"
-CLIENT_NAME = "Kodi"
-BUFFERSIZE_REQUEST_MS = 5000  # 5 seconds
-
 
 class SendspinServiceController:
-    """
-    Main Service Controller.
-    """
-
     def __init__(self) -> None:
         self.logger = logging.getLogger("sendspin")
         self.playback_engine = DockerPlaybackEngine(
@@ -73,182 +15,172 @@ class SendspinServiceController:
             container_name=xbmcaddon.Addon().getSetting("docker_container_name") or "sendspin-player",
             config_dir=xbmcaddon.Addon().getSetting("docker_config_dir") or "/storage/.config/sendspin",
         )
-        self.kodi = KodiManager(stop_callback=self.handle_stop)
+        self.kodi = KodiManager()
+        self.original_kodi_device = None
 
-        # Audio Configuration
-        self.sample_rate_max = 48000
-        self.channels = 2
-        self.bit_depth = 16
-        self.buffer_bytes = int(
-            (BUFFERSIZE_REQUEST_MS / 1000.0) * self.sample_rate_max * self.channels * (self.bit_depth // 8)
-        )
-        self.is_playing = False
-        self.playback_state = PlaybackStateType.STOPPED
+    def _get_audio_device_id(self, device_string: str) -> str:
+        """Extract the global ALSA device index from Kodi's audio device string."""
+        # Retrieve the fallback value from settings, defaulting to "0" if the field is empty
+        fallback = xbmcaddon.Addon().getSetting("fallback_audio_device") or "0"
 
-    def _build_kodi_audio_alternate_candidates(self, current_device: str) -> list[str]:
-        candidates: list[str] = []
-        device_lower = current_device.lower()
+        # Check if the device is ALSA; PulseAudio or Bluetooth will trigger the fallback
+        if not device_string or "ALSA:" not in device_string:
+            self.logger.warning(f"Non-ALSA device detected ({device_string}). Using fallback: {fallback}")
+            return fallback
 
-        if "card=" in device_lower and "dev=" in device_lower:
-            match = re.search(r"(alsa:[^|]+card=[^,]+,dev=)(\d+)(.*)", current_device, re.IGNORECASE)
-            if match:
-                prefix = match.group(1)
-                current_dev = int(match.group(2))
-                suffix = match.group(3)
-                for candidate_dev in [0, 1, 2, 3, 5, 6, 7]:
-                    if candidate_dev == current_dev:
-                        continue
-                    candidates.append(f"{prefix}{candidate_dev}{suffix}")
+        # Parse card name and device number from the Kodi connection string[cite: 6]
+        card_match = re.search(r"CARD=([^,|]+)", device_string)
+        dev_match = re.search(r"DEV=(\d+)", device_string)
 
-        if "hdmi" in device_lower and "default" not in device_lower:
-            candidates.append("ALSA:default")
-            candidates.append("ALSA:sysdefault")
+        if not card_match or not dev_match:
+            self.logger.warning(f"Could not parse ALSA string. Using fallback: {fallback}")
+            return fallback
 
-        if "default" not in device_lower and "dmix" not in device_lower:
-            candidates.append("ALSA:default")
-            candidates.append("ALSA:sysdefault")
+        card_name = card_match.group(1)
+        dev_num = int(dev_match.group(1))
 
-        # Deduplicate while preserving order.
-        seen = set()
-        unique_candidates: list[str] = []
-        for candidate in candidates:
-            if candidate not in seen:
-                seen.add(candidate)
-                unique_candidates.append(candidate)
-        return unique_candidates
+        # Run aplay -l to map the named card and device to a numerical index[cite: 6]
+        try:
+            result = subprocess.run(["aplay", "-l"], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                self.logger.error(f"Failed to run aplay -l: {result.stderr}")
+                return fallback
 
-    def _switch_kodi_audio_to_alternate(self, current_device: str) -> str | None:
-        for candidate in self._build_kodi_audio_alternate_candidates(current_device):
-            if self.kodi.set_audio_output_device(candidate):
-                self.logger.info(f"Switched Kodi audio device to alternate output: {candidate}")
-                return candidate
-            self.logger.debug(f"Kodi audio device change candidate failed: {candidate}")
-        return None
+            lines = result.stdout.split("\n")
+            devices = []
+            current_card = None
+
+            for line in lines:
+                if line.startswith("card "):
+                    # Extract the card number from lines like 'card 0: PCH [HDA Intel PCH]'[cite: 6]
+                    parts = line.split(":", 1)
+                    if len(parts) > 0:
+                        card_part = parts[0].strip()
+                        card_num = int(card_part.split()[1])
+                        current_card = card_num
+                elif line.strip().startswith("device ") and current_card is not None:
+                    # Extract the device number from lines like '  device 3: HDMI 0 [HDMI 0]'[cite: 6]
+                    dev_part = line.strip().split(":", 1)[0]
+                    dev_num_line = int(dev_part.split()[1])
+                    devices.append((current_card, dev_num_line))
+
+            # Match the card name back to its numerical card number[cite: 6]
+            card_num = None
+            for line in lines:
+                if "card " in line and f"[{card_name}]" in line:
+                    card_part = line.split(":", 1)[0]
+                    card_num = int(card_part.split()[1])
+                    break
+
+            if card_num is None:
+                self.logger.error(f"Could not find card number for {card_name}. Using fallback.")
+                return fallback
+
+            # Find the index of the specific (card, device) tuple in the full list[cite: 6]
+            try:
+                idx = devices.index((card_num, dev_num))
+                return str(idx)
+            except ValueError:
+                self.logger.error(f"Device {card_num},{dev_num} not found in list. Using fallback.")
+                return fallback
+
+        except Exception as e:
+            self.logger.error(f"Error during audio device detection: {e}")
+            return fallback
+        """Extract the global ALSA device index from Kodi's audio device string."""
+        if not device_string or "ALSA:" not in device_string:
+            return "0"
+
+        # Parse card name and device number
+        card_match = re.search(r"CARD=([^,|]+)", device_string)
+        dev_match = re.search(r"DEV=(\d+)", device_string)
+        if not card_match or not dev_match:
+            return "0"
+
+        card_name = card_match.group(1)
+        dev_num = int(dev_match.group(1))
+
+        # Run aplay -l to get device list
+        try:
+            result = subprocess.run(["aplay", "-l"], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                self.logger.error(f"Failed to run aplay -l: {result.stderr}")
+                return "0"
+
+            lines = result.stdout.split("\n")
+            devices = []
+            current_card = None
+            for line in lines:
+                if line.startswith("card "):
+                    # card 0: PCH [HDA Intel PCH]
+                    parts = line.split(":", 1)
+                    if len(parts) > 0:
+                        card_part = parts[0].strip()
+                        card_num = int(card_part.split()[1])
+                        current_card = card_num
+                elif line.strip().startswith("device ") and current_card is not None:
+                    #   device 3: HDMI 0 [HDMI 0]
+                    dev_part = line.strip().split(":", 1)[0]
+                    dev_num_line = int(dev_part.split()[1])
+                    devices.append((current_card, dev_num_line))
+
+            # Find the card number for the card name
+            card_num = None
+            for line in lines:
+                if "card " in line and f"[{card_name}]" in line:
+                    card_part = line.split(":", 1)[0]
+                    card_num = int(card_part.split()[1])
+                    break
+
+            if card_num is None:
+                self.logger.error(f"Could not find card number for {card_name}")
+                return "0"
+
+            # Find the index of (card_num, dev_num)
+            try:
+                idx = devices.index((card_num, dev_num))
+                return str(idx)
+            except ValueError:
+                self.logger.error(f"Device {card_num},{dev_num} not found in list")
+                return "0"
+        except Exception as e:
+            self.logger.error(f"Error getting audio device index: {e}")
+            return "0"
 
     async def setup(self) -> None:
-        """Initial setup and connection to Sendspin server."""
+        # Capture the current device string[cite: 3, 5]
+        self.original_kodi_device = self.kodi.get_audio_output_device()
+        self.logger.info(f"Captured original audio device: {self.original_kodi_device}")
 
-        current_vol, current_mute = self.kodi.get_current_volume()
-        kodi_audio_device = self.kodi.get_audio_output_device()
-        if kodi_audio_device:
-            self.logger.info(f"Detected Kodi audio output device: '{kodi_audio_device}'")
-            self.playback_engine.preferred_device_name = kodi_audio_device
-
-            devices = self.playback_engine._list_audio_devices()
-            device_conflict = bool(self.playback_engine._find_device_by_name(kodi_audio_device, devices))
-
-            if device_conflict or kodi_audio_device.lower().startswith("alsa:"):
-                self.logger.info(
-                    "Kodi is using an ALSA audio output device. Releasing the device before starting sendspin."
-                )
-                alternate = self._switch_kodi_audio_to_alternate(kodi_audio_device)
-                if alternate:
-                    await asyncio.sleep(1)
-                    new_device = self.kodi.get_audio_output_device()
-                    self.logger.info(f"Kodi audio output switched to: '{new_device or alternate}'")
-                else:
-                    self.logger.warning(
-                        "Failed to switch Kodi to an alternate audio device; sendspin may still conflict with Kodi audio output."
-                    )
+        # Extract audio device ID for Docker
+        override = xbmcaddon.Addon().getSetting("audio_device_override")
+        if override:
+            audio_device_id = override
+            self.logger.info(f"Using audio device override: {audio_device_id}")
         else:
-            self.logger.info("Could not detect Kodi audio output device; falling back to auto-selection.")
+            audio_device_id = self._get_audio_device_id(self.original_kodi_device)
+            self.logger.info(f"Extracted audio device ID: {audio_device_id}")
+        self.playback_engine.audio_device = audio_device_id
 
-        self.logger.info("Starting Docker Sendspin backend container.")
-        self.playback_engine.start()
+        # If ALSA is active, move Kodi to an alternate to avoid hardware locking[cite: 1, 5]
+        if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
+            self._switch_to_alternate()
 
-    async def run(self) -> None:
-        """Main execution loop."""
-        await self.setup()
-        await self.kodi.start(on_volume_change=self.handle_local_volume_change)
-        monitor = xbmc.Monitor()
-        while not monitor.abortRequested():
-            await asyncio.sleep(1)
-        await self.cleanup()
+        self.playback_engine.start()  #
+
+    def _switch_to_alternate(self):
+        # Try common safe fallbacks[cite: 5]
+        candidates = ["ALSA:default", "ALSA:sysdefault", "PULSE:default"]
+        for candidate in candidates:
+            if candidate.lower() != self.original_kodi_device.lower():
+                if self.kodi.set_audio_output_device(candidate):
+                    self.logger.info(f"Switched Kodi audio to {candidate} to free hardware.")
+                    break
 
     async def cleanup(self) -> None:
-        """Clean shutdown. TODO: Needs work."""
+        # Stop container and restore audio device[cite: 1, 3, 5]
         self.playback_engine.stop()
+        if self.original_kodi_device:
+            self.logger.info(f"Restoring audio device to: {self.original_kodi_device}")
+            self.kodi.set_audio_output_device(self.original_kodi_device)
         await self.kodi.cleanup()
-        self.logger.info("Shutting down Sendspin service...")
-
-    # --- Kodi Event Handlers  ---
-
-    async def handle_local_volume_change(self, volume: int, muted: bool) -> None:
-        """Called by KodiManager when the user changes volume locally."""
-        self.logger.debug(f"Syncing local volume: Vol={volume}, Mute={muted}")
-
-        self.logger.debug("Docker backend active; local volume changes are managed by the container or PulseAudio.")
-        # The Docker Sendspin playback service should handle audio level/mute.
-
-    def handle_stop(self) -> None:
-        """Stop handler triggered by Kodi Player events."""
-        self.logger.info("Playback stop detected.")
-        if self.playback_state == PlaybackStateType.STOPPED:
-            return
-        self.is_playing = False
-        self.playback_state = PlaybackStateType.STOPPED
-        self.playback_engine.stop()
-        self.kodi.stop_ui()
-
-    # --- Sendspin Event Handlers ---
-    def on_stream_start(self, message: StreamStartMessage) -> None:
-        """Triggered when Sendspin starts a stream."""
-        self.logger.info(
-            f"Stream Start Received. Sample Rate: {message.payload.player.sample_rate}, Channels: {message.payload.player.channels}, Bit Depth: {message.payload.player.bit_depth}"
-        )
-        self.is_playing = True
-        self.playback_state = PlaybackStateType.PLAYING
-
-    def on_audio_chunk(self, server_timestamp_us: int, audio_data: bytes, audio_format: AudioFormat) -> None:
-        """Handles incoming audio data chunks."""
-        # Docker backend does not consume local audio chunks.
-        return
-
-    def on_metadata_update(self, payload: ServerStatePayload) -> None:
-        """Called when track info (Artist/Title/Art) changes."""
-        metadata = getattr(payload, "metadata", {})
-
-        title = getattr(metadata, "title", "Unknown")
-        artist = getattr(metadata, "artist", "Unknown")
-
-        self.logger.info(f"Metadata Update: {artist} - {title}")
-        if isinstance(title, str) and isinstance(artist, str) and self.is_playing:
-            self.kodi.update_ui(title="Sendspin Stream", artist="Sendspin Stream")
-
-    def on_stream_end(self, message: StreamEndMessage) -> None:
-        """Triggered when stream ends. TODO: Needs work."""
-        self.logger.info("Stream End received")
-        self.handle_stop()
-
-    def on_server_command(self, payload: ServerCommandPayload) -> None:
-        """Handle Volume/Mute commands from the Sendspin server."""
-        command_data = getattr(payload, "player", None)
-        self.logger.debug(f"Server Command received: {command_data.command}")
-
-        if command_data.command == PlayerCommand.VOLUME:
-            vol = getattr(command_data, "volume", None)
-            muted = getattr(command_data, "muted", None)
-
-            if vol is not None:
-                self.playback_engine.set_volume(vol)
-            if muted is not None:
-                self.playback_engine.set_mute(muted)
-
-            # Update Kodi UI
-            self.kodi.set_volume(vol, muted)
-
-
-# --- Entry Point ---
-
-if __name__ == "__main__":
-    # Initialize Logger
-    log = logger.init_logger()
-    log.info("Sendspin Service Starting.")
-
-    # Run Async Loop
-    service = SendspinServiceController()
-    try:
-        asyncio.run(service.run())
-    except Exception:
-        log.exception("Unhandled exception in sendspin service")
-        traceback.print_exc()

@@ -1,6 +1,6 @@
 # Sendspin Service for Kodi
 
-This is a background service for Kodi that acts as a client for the Sendspin audio streaming server. It allows Kodi to play audio from a Sendspin server.
+This is a background service for Kodi that acts as a client for the Sendspin audio streaming server. It works by launching and managing a lightweight Docker container to handle high-fidelity audio playback directly via ALSA hardware.
 
 ## Disclaimer
 
@@ -10,78 +10,55 @@ This addon was developed with the assistance of AI.
 
 ## How it Works
 
-TODO
+Instead of running heavy audio processing libraries inside Kodi's Python environment, this addon delegates playback to a dedicated Sendspin Docker container (`sendspin-local`).
 
-## Current noted incompatabilities:
+When activated, the addon:
+1. Detects the physical ALSA hardware device currently being used by Kodi.
+2. Temporarily shifts Kodi to a fallback audio sink to release the hardware lock.
+3. Launches the Docker container, passing it the exact ALSA hardware index via `/dev/snd`.
+4. Restores Kodi's original audio settings when playback is stopped.
+
+## Current noted incompatibilities:
 
 - AudioProfiles
 - Librespot
 
+## Requirements
+
+- **Docker**: The host system (e.g., LibreELEC) must have Docker installed and running.
+- **Sendspin Image**: The `sendspin-local` Docker image must be available on the host machine.
+
 ## Installation
 
-### 1. Download Dependencies
+Because this addon relies entirely on Docker for playback, there are no external Python dependencies to download.
 
-The addon requires several Python libraries to function. A helper script is included to download them into the correct folder.
+### 1. Package the Addon
+Create a zip file of the `service.sendspin` directory contents.
 
-Run the script:
-```sh
-./service.sendspin/tools/get_libs.py
-```
-This will use uv and pip to create a venv file and install the dependencies into the `service.sendspin/resources/lib` folder.
-
-### 2. Package the Addon
-
-After the dependencies are downloaded, you need to create a zip file of the `service.sendspin` directory contents.
-
-Zip the `service.sendspin` directory.
-
-### 3 . Ensure kodi is Using PulseAudio
-
-For this addon to mix audio correctly, Kodi must use the PulseAudio backend.
-1. Navigate to Settings > System > Audio.
-2. Check the Audio output device setting.
-3. Ensure the selected device name begins with PULSE: (e.g., PULSE: Default).
-
-> NOTE: The Docker playback backend can now use ALSA directly by exposing `/dev/snd` into the container and selecting the ALSA device. The addon service can auto-detect Kodi's selected output device, move Kodi to an alternate output, and launch the Docker container using the matching ALSA device.
-
-#### fix no pulse audio (for libreElec)
-
-This fix prevents kodi booting before pulseaudio devices are avalible.
-1. Create directories and upload the script and service files:
-```sh
-mkdir -p /storage/.config/pulseaudio-fix
-```
-2. Place the script found in tools at `/storage/.config/pulseaudio-fix/wait-for-pulse-sink.sh`
-3. Place the unit found in tools at `/storage/.config/system.d/pulseaudio-fix.service`.
-4. Make the script executable:
-```sh
-chmod +x /storage/.config/pulseaudio-fix/wait-for-pulse-sink.sh
-```
-5. Reload systemd daemon and enable the service:
-```sh
-systemctl daemon-reload
-systemctl enable pulseaudio-fix.service
-```
-6. Reboot the device to test full boot ordering:
-```sh
-reboot
-```
-
-### 4. Install in Kodi
-
-1.  Open Kodi.
-2.  Go to **Settings** (the gear icon).
-3.  Select **Add-ons**.
-4.  Select **Install from zip file**.
-5.  Navigate to the location where you saved `service.sendspin.zip`.
-6.  Select the zip file to install it.
-7.  Wait for the "Add-on installed" notification.
+### 2. Install in Kodi
+1. Open Kodi.
+2. Go to **Settings** (the gear icon).
+3. Select **Add-ons**.
+4. Select **Install from zip file**.
+5. Navigate to the location where you saved `service.sendspin.zip`.
+6. Select the zip file to install it.
+7. Wait for the "Add-on installed" notification.
 
 ## Configuration
 
 The addon can be configured through its settings in Kodi.
 
--   **Client ID**: A unique identifier for this Kodi client.
--   **Client Name**: A friendly name to identify this client on the Sendspin server.
--   **Log file path**: The location to store the addon's log file.
--   **Startup error file**: A file to log any critical errors that happen when the service first starts.
+**Connection & Client:**
+- **Server WebSocket URL**: The address of your main Sendspin server.
+- **Client ID & Name**: Identifiers for this Kodi client on your network.
+
+**Docker & Audio Settings:**
+- **Docker container name**: Name for the spawned container (default: `sendspin-player`).
+- **Docker image name**: The image to run (default: `sendspin-local`).
+- **Docker config directory**: The mapped path for container settings (default: `/storage/.config/sendspin`).
+- **Audio device ID override**: Force the container to use a specific ALSA index (leave empty to auto-detect).
+- **Fallback audio device ID**: The ALSA index to use if Kodi is currently using PulseAudio (e.g., Bluetooth) and hardware auto-detection fails.
+
+**Logging:**
+- **Log file path**: The location to store the addon's log file. Container logs are streamed directly into Kodi's main log.
+- **Startup error file**: A file to log any critical errors that happen when the service first starts.
