@@ -27,7 +27,7 @@ def main() -> int:
     tools_dir = Path(__file__).resolve().parent
     addon_dir = tools_dir.parent
     project_root = addon_dir.parent
-    target_dir = project_root / "service.sendspin" / "resources" / "lib"
+    target_dir = addon_dir / "resources" / "lib"
     venv_dir = project_root / ".venv"
 
     # Define the pip path inside the venv

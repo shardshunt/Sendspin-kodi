@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<addon id="service.sendspin" name="Sendspin" version="0.1.0" provider-name="Shards">
+<addon id="plugin.audio.sendspin" name="Sendspin" version="0.1.0" provider-name="Shards">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
   </requires>
-  <!-- Changed to pluginsource for an app-like interface -->
   <extension point="xbmc.python.pluginsource" library="default.py">
     <provides>audio</provides>
   </extension>

@@ -1,6 +1,6 @@
-# Sendspin Service for Kodi
+# Sendspin Audio Plugin for Kodi
 
-This is music provider for Kodi that acts as a client for the Sendspin audio streaming server. It works by launching and managing a lightweight Docker container running [Sendspin-CLI](https://github.com/Sendspin/sendspin-cli) to handle audio playback and synchronisation.
+This is a music provider plugin for Kodi that acts as a client for the Sendspin audio streaming server. It works by launching and managing a lightweight Docker container running [Sendspin-CLI](https://github.com/Sendspin/sendspin-cli) to handle audio playback and synchronisation.
 
 ## Disclaimer
 
@@ -31,14 +31,14 @@ When activated, the addon:
 ## Installation
 
 ### 1. Package the Addon
-Create a zip file of the `service.sendspin` directory contents.
+Create a zip file of the `plugin.audio.sendspin` directory contents.
 
 ### 2. Install in Kodi
 1. Open Kodi.
 2. Go to **Settings** (the gear icon).
 3. Select **Add-ons**.
 4. Select **Install from zip file**.
-5. Navigate to the location where you saved `service.sendspin.zip`.
+5. Navigate to the location where you saved `plugin.audio.sendspin.zip`.
 6. Select the zip file to install it.
 7. Wait for the "Add-on installed" notification.
 
