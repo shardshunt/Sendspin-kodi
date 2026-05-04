@@ -19,133 +19,102 @@ class SendspinServiceController:
         self.original_kodi_device = None
 
     def _get_audio_device_id(self, device_string: str) -> str:
-        """Extract the global ALSA device index from Kodi's audio device string."""
-        # Retrieve the fallback value from settings, defaulting to "0" if the field is empty
+        """Maps Kodi strings to ALSA indices by matching both hardware numbers and port labels."""
         fallback = xbmcaddon.Addon().getSetting("fallback_audio_device") or "0"
 
-        # Check if the device is ALSA; PulseAudio or Bluetooth will trigger the fallback
         if not device_string or "ALSA:" not in device_string:
-            self.logger.warning(f"Non-ALSA device detected ({device_string}). Using fallback: {fallback}")
             return fallback
 
-        # Parse card name and device number from the Kodi connection string[cite: 6]
+        # 1. Parse Kodi string (e.g., CARD=HDMI,DEV=4)
         card_match = re.search(r"CARD=([^,|]+)", device_string)
         dev_match = re.search(r"DEV=(\d+)", device_string)
 
         if not card_match or not dev_match:
-            self.logger.warning(f"Could not parse ALSA string. Using fallback: {fallback}")
             return fallback
 
-        card_name = card_match.group(1)
-        dev_num = int(dev_match.group(1))
+        target_card_name = card_match.group(1).lower()
+        target_dev_num = int(dev_match.group(1))
 
-        # Run aplay -l to map the named card and device to a numerical index[cite: 6]
         try:
+            # 2. Capture hardware state
             result = subprocess.run(["aplay", "-l"], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
-                self.logger.error(f"Failed to run aplay -l: {result.stderr}")
                 return fallback
 
             lines = result.stdout.split("\n")
-            devices = []
-            current_card = None
+            hardware_cards = {}  # {card_idx: "Long Name"}
+            global_device_list = []  # List of {'card': idx, 'device': idx, 'label': str}
 
             for line in lines:
                 if line.startswith("card "):
-                    # Extract the card number from lines like 'card 0: PCH [HDA Intel PCH]'[cite: 6]
-                    parts = line.split(":", 1)
-                    if len(parts) > 0:
-                        card_part = parts[0].strip()
-                        card_num = int(card_part.split()[1])
-                        current_card = card_num
-                elif line.strip().startswith("device ") and current_card is not None:
-                    # Extract the device number from lines like '  device 3: HDMI 0 [HDMI 0]'[cite: 6]
-                    dev_part = line.strip().split(":", 1)[0]
-                    dev_num_line = int(dev_part.split()[1])
-                    devices.append((current_card, dev_num_line))
+                    card_idx = int(line.split(":")[0].split()[1])
 
-            # Match the card name back to its numerical card number[cite: 6]
-            card_num = None
-            for line in lines:
-                if "card " in line and f"[{card_name}]" in line:
-                    card_part = line.split(":", 1)[0]
-                    card_num = int(card_part.split()[1])
+                    # Update card names map
+                    name_bracket = re.search(r"\[(.*?)\]", line)
+                    if name_bracket and card_idx not in hardware_cards:
+                        hardware_cards[card_idx] = name_bracket.group(1)
+
+                    # Extract device index and its label (e.g., "HDMI 4 [Panasonic-TV]")
+                    dev_info = re.search(r"device (\d+): (.*)", line)
+                    if dev_info:
+                        global_device_list.append(
+                            {"card": card_idx, "device": int(dev_info.group(1)), "label": dev_info.group(2)}
+                        )
+
+            # 3. Match the card
+            matched_card_idx = None
+            for idx, hw_name in hardware_cards.items():
+                if target_card_name in hw_name.lower() or hw_name.lower() in target_card_name:
+                    matched_card_idx = idx
                     break
 
-            if card_num is None:
-                self.logger.error(f"Could not find card number for {card_name}. Using fallback.")
+            if matched_card_idx is None:
+                self.logger.error(f"Could not match card '{target_card_name}'.")
                 return fallback
 
-            # Find the index of the specific (card, device) tuple in the full list[cite: 6]
+            # 4. Match the device (Direct Index vs Label Search)
+            final_device_idx = None
+
+            # Filter global list to only devices on our matched card
+            card_devices = [d for d in global_device_list if d["card"] == matched_card_idx]
+
+            # Step A: Look for exact numerical device match
+            for d in card_devices:
+                if d["device"] == target_dev_num:
+                    final_device_idx = d["device"]
+                    break
+
+            # Step B: If no exact index, search for the target number in the labels
+            if final_device_idx is None:
+                target_str = str(target_dev_num)
+                for d in card_devices:
+                    # Matches if "4" appears in "HDMI 4 [Panasonic-TV]"
+                    if target_str in d["label"]:
+                        self.logger.info(
+                            f"Matched Kodi DEV={target_str} to ALSA Device {d['device']} via label: {d['label']}"
+                        )
+                        final_device_idx = d["device"]
+                        break
+
+            if final_device_idx is None:
+                self.logger.error(f"Device {target_dev_num} not found by index or label on Card {matched_card_idx}.")
+                return fallback
+
+            # 5. Calculate global sequential index for Docker
             try:
-                idx = devices.index((card_num, dev_num))
-                return str(idx)
-            except ValueError:
-                self.logger.error(f"Device {card_num},{dev_num} not found in list. Using fallback.")
+                # We need the index of the tuple in the full global list
+                docker_idx = next(
+                    i
+                    for i, d in enumerate(global_device_list)
+                    if d["card"] == matched_card_idx and d["device"] == final_device_idx
+                )
+                return str(docker_idx)
+            except StopIteration:
                 return fallback
 
         except Exception as e:
-            self.logger.error(f"Error during audio device detection: {e}")
+            self.logger.error(f"Robust mapping failed: {e}")
             return fallback
-        """Extract the global ALSA device index from Kodi's audio device string."""
-        if not device_string or "ALSA:" not in device_string:
-            return "0"
-
-        # Parse card name and device number
-        card_match = re.search(r"CARD=([^,|]+)", device_string)
-        dev_match = re.search(r"DEV=(\d+)", device_string)
-        if not card_match or not dev_match:
-            return "0"
-
-        card_name = card_match.group(1)
-        dev_num = int(dev_match.group(1))
-
-        # Run aplay -l to get device list
-        try:
-            result = subprocess.run(["aplay", "-l"], capture_output=True, text=True, timeout=10)
-            if result.returncode != 0:
-                self.logger.error(f"Failed to run aplay -l: {result.stderr}")
-                return "0"
-
-            lines = result.stdout.split("\n")
-            devices = []
-            current_card = None
-            for line in lines:
-                if line.startswith("card "):
-                    # card 0: PCH [HDA Intel PCH]
-                    parts = line.split(":", 1)
-                    if len(parts) > 0:
-                        card_part = parts[0].strip()
-                        card_num = int(card_part.split()[1])
-                        current_card = card_num
-                elif line.strip().startswith("device ") and current_card is not None:
-                    #   device 3: HDMI 0 [HDMI 0]
-                    dev_part = line.strip().split(":", 1)[0]
-                    dev_num_line = int(dev_part.split()[1])
-                    devices.append((current_card, dev_num_line))
-
-            # Find the card number for the card name
-            card_num = None
-            for line in lines:
-                if "card " in line and f"[{card_name}]" in line:
-                    card_part = line.split(":", 1)[0]
-                    card_num = int(card_part.split()[1])
-                    break
-
-            if card_num is None:
-                self.logger.error(f"Could not find card number for {card_name}")
-                return "0"
-
-            # Find the index of (card_num, dev_num)
-            try:
-                idx = devices.index((card_num, dev_num))
-                return str(idx)
-            except ValueError:
-                self.logger.error(f"Device {card_num},{dev_num} not found in list")
-                return "0"
-        except Exception as e:
-            self.logger.error(f"Error getting audio device index: {e}")
-            return "0"
 
     async def setup(self) -> None:
         # Capture the current device string[cite: 3, 5]
