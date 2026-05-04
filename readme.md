@@ -1,6 +1,6 @@
 # Sendspin Service for Kodi
 
-This is a background service for Kodi that acts as a client for the Sendspin audio streaming server. It works by launching and managing a lightweight Docker container to handle high-fidelity audio playback directly via ALSA hardware.
+This is music provider for Kodi that acts as a client for the Sendspin audio streaming server. It works by launching and managing a lightweight Docker container running [Sendspin-CLI](https://github.com/Sendspin/sendspin-cli) to handle audio playback and synchronisation.
 
 ## Disclaimer
 
@@ -8,23 +8,27 @@ This addon is in an ALPHA state. It is experimental and may contain bugs or be u
 
 This addon was developed with the assistance of AI.
 
+## Usage
+
+Sendspin presents as a music provider, when run it starts a stream and the docker container which can be used as per sendspin cli.
+
+Currently client side control must be done via `docker exec sendspin-player` commands
+
 ## How it Works
 
-Instead of running the audio processing libraries inside Kodi's Python environment, this addon delegates playback to a dedicated Sendspin Docker container (`sendspin-local`).
-
 When activated, the addon:
-1. Detects the physical ALSA hardware device currently being used by Kodi.
+
+1. Detects the audio hardware device currently being used by Kodi.
 2. Temporarily shifts Kodi to a fallback audio sink to release the hardware lock.
 3. Launches the Docker container, passing it the exact ALSA hardware index via `/dev/snd`.
 4. Restores Kodi's original audio settings when playback is stopped.
 
 ## Requirements
 
-- **Docker**: The host system must have Docker installed and running (e.g., Docker Addon for LibreELEC).
+- **Docker**: The host system must have Docker installed  and avalible in system `$PATH` (e.g., Docker Addon for LibreELEC).
+
 
 ## Installation
-
-Because this addon relies entirely on Docker for playback, there are no external Python dependencies to download.
 
 ### 1. Package the Addon
 Create a zip file of the `service.sendspin` directory contents.
