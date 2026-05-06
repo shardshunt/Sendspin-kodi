@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -118,13 +119,21 @@ class DockerPlaybackEngine:
 
         if not result.stdout.strip():
             self.logger.info(f"Image {self.image_name} not found. Attempting to build...")
-            dockerfile_path = os.path.join(self.addon_dir, "Dockerfile")
+            dockerfile_path = os.path.join(self.addon_dir, "plugin.audio.sendspin", "Dockerfile")
 
             if not os.path.exists(dockerfile_path):
                 self.logger.error(f"Cannot build image: Dockerfile not found at {dockerfile_path}")
                 return False
 
-            build_cmd = ["docker", "build", "-t", self.image_name, self.addon_dir]
+            build_cmd = [
+                "docker",
+                "build",
+                "--no-cache",
+                "--pull",
+                "-t",
+                self.image_name,
+                os.path.join(self.addon_dir, "plugin.audio.sendspin"),
+            ]
             build_result = subprocess.run(build_cmd, capture_output=True, text=True)
 
             if build_result.returncode == 0:
@@ -137,14 +146,15 @@ class DockerPlaybackEngine:
 
     def _stream_logs(self):
         """Background worker to capture docker logs and send them to Kodi."""
+        # Using -f (follow) to keep the stream open
         cmd = ["docker", "logs", "-f", "--tail", "0", self.container_name]
-        self.log_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.log_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
 
-        for line in iter(self.log_process.stdout.readline, ""):
+        # Iterating directly over stdout is cleaner for real-time streaming
+        for line in self.log_process.stdout:
             if line:
-                line = line.strip()
                 self._capture_volume_from_log(line)
-                self.logger.info(f"DOCKER: {line}")
+                self.logger.info(f"DOCKER: {line.strip()}")
 
         if self.log_process:
             self.log_process.stdout.close()
@@ -188,7 +198,12 @@ class DockerPlaybackEngine:
             self.audio_device,
             "--hardware-volume",
             "false",
+            "--metadata",
+            "true",
         ]
+
+        executable_command = shlex.join(cmd)
+        self.logger.info(f"Executing Docker command: {executable_command}")
 
         result = subprocess.run(cmd, capture_output=True, text=True)
 
