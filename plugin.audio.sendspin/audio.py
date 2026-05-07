@@ -1,3 +1,4 @@
+import ast
 import json
 import logging
 import os
@@ -29,6 +30,8 @@ class DockerPlaybackEngine:
         self.logged_runtime_volume_limit = False
         # Path to the directory containing the Dockerfile
         self.addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.current_metadata = {}
+        self.metadata_updated = False
 
     def kodi_to_sendspin_volume(self, volume):
         return max(0, min(100, round(int(volume) * self.volume_scale)))
@@ -150,13 +153,14 @@ class DockerPlaybackEngine:
         cmd = ["docker", "logs", "-f", "--tail", "0", self.container_name]
         self.log_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
 
-        # Iterating directly over stdout is cleaner for real-time streaming
-        for line in self.log_process.stdout:
-            if line:
-                self._capture_volume_from_log(line)
-                self.logger.info(f"DOCKER: {line.strip()}")
+        if self.log_process.stdout is not None:
+            for line in self.log_process.stdout:
+                if line:
+                    self._capture_volume_from_log(line)
+                    self._parse_metadata(line)
+                    self.logger.info(f"DOCKER: {line.strip()}")
 
-        if self.log_process:
+        if self.log_process.stdout:
             self.log_process.stdout.close()
 
     def _capture_volume_from_log(self, line):
@@ -166,6 +170,27 @@ class DockerPlaybackEngine:
 
         volume = max(0, min(100, int(match.group(1))))
         self._write_json_file(self.volume_state_path, {"volume": volume})
+
+    def _parse_metadata(self, line):
+        """Extracts and cleans metadata from Sendspin log payloads."""
+        if "ServerStatePayload:" in line:
+            try:
+                payload_str = line.split("ServerStatePayload:", 1)[1]
+
+                # Regex to convert <Enum.VALUE: 'data'> into 'data'
+                # and <Enum.VALUE: False> into False
+                cleaned_str = re.sub(r"<\w+\.[^:]+:\s+([^>]+)>", r"\1", payload_str)
+
+                payload = ast.literal_eval(cleaned_str)
+                metadata = payload.get("metadata", {})
+
+                # Check if metadata contains actual content beyond just a timestamp
+                if "title" in metadata and metadata != self.current_metadata:
+                    self.current_metadata = metadata
+                    self.metadata_updated = True
+                    self.logger.info(f"Parsed metadata for: {metadata.get('title')}")
+            except Exception as e:
+                self.logger.error(f"Failed to parse metadata line: {e}")
 
     def start(self):
         if not shutil.which("docker"):
@@ -216,8 +241,10 @@ class DockerPlaybackEngine:
 
     def stop(self):
         if self.log_process:
-            self.log_process.terminate()
-            self.log_process = None
+            try:
+                self.log_process.terminate()
+            except OSError:
+                pass
 
         subprocess.run(["docker", "stop", self.container_name], capture_output=True)
         subprocess.run(["docker", "rm", self.container_name], capture_output=True)

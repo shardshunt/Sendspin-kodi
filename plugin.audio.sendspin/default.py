@@ -99,6 +99,36 @@ async def main_async(controller):
                         f"mapped_sendspin_volume={mapped_volume}"
                     )
 
+            new_metadata = await asyncio.get_running_loop().run_in_executor(None, controller.get_new_metadata)
+
+            if new_metadata:
+                log.info(f"Applying metadata update for: {new_metadata.get('title')}")
+
+                title = str(new_metadata.get("title", "Sendspin Audio"))
+                artist = str(new_metadata.get("artist", "Unknown Artist"))
+                album = str(new_metadata.get("album", "Unknown Album"))
+                thumb = new_metadata.get("artwork_url", "")
+
+                # 1. Update the ListItem for the upcoming 'restart'
+                list_item.setLabel(title)
+                tag = list_item.getMusicInfoTag()
+                tag.setMediaType("song")  # Essential for v20+
+                tag.setTitle(title)
+                tag.setArtist(artist)
+                tag.setAlbum(album)
+
+                if thumb:
+                    list_item.setArt({"thumb": thumb})
+
+                # 2. Restart the dummy playback to refresh the UI
+                # This refreshes the Player's internal InfoTagMusic
+                # without shutting down the Docker backend.
+                await start_playback()
+
+                # 3. Verify the live Player tag (as per documentation)
+                live_tag = player.getMusicInfoTag()
+                log.info(f"UI Update Verified: {live_tag.getTitle()} by {live_tag.getArtist()}")
+
             if not player.isPlaying():
                 log.info("Dummy playback stopped by user/intervention. Exiting loop.")
                 break

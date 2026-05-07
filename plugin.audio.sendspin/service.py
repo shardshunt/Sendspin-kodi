@@ -36,6 +36,14 @@ class SendspinServiceController:
         self.logger.info("Using Kodi to Sendspin volume scale: %s", scale)
         return scale
 
+    def get_new_metadata(self):
+        """Returns metadata if updated, otherwise None."""
+        if self.playback_engine.metadata_updated:
+            # Reset the flag so we only trigger once per update
+            self.playback_engine.metadata_updated = False
+            return self.playback_engine.current_metadata
+        return None
+
     def _get_audio_device_id(self, device_string: str) -> str:
         """Maps Kodi strings to ALSA indices by matching both hardware numbers and port labels."""
         fallback = xbmcaddon.Addon().getSetting("fallback_audio_device") or "0"
@@ -147,19 +155,22 @@ class SendspinServiceController:
         if override:
             audio_device_id = override
             self.logger.info(f"Using audio device override: {audio_device_id}")
-        else:
+        elif self.original_kodi_device is not None:
             audio_device_id = self._get_audio_device_id(self.original_kodi_device)
             self.logger.info(f"Extracted audio device ID: {audio_device_id}")
+        else:
+            audio_device_id = xbmcaddon.Addon().getSetting("fallback_audio_device") or "0"
+            self.logger.warning(f"No original Kodi device found; using fallback: {audio_device_id}")
         self.playback_engine.audio_device = audio_device_id
 
         # If ALSA is active, move Kodi to an alternate to avoid hardware locking[cite: 1, 5]
         if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
             self._switch_to_alternate()
 
-        self.playback_engine.start()  #
+        self.playback_engine.start()
 
     def _switch_to_alternate(self):
-        # Try common safe fallbacks[cite: 5]
+        # Try common safe fallbacks
         candidates = ["ALSA:default", "ALSA:sysdefault", "PULSE:default"]
         for candidate in candidates:
             if candidate.lower() != self.original_kodi_device.lower():
