@@ -21,7 +21,7 @@ import logger  # noqa: E402
 from service import SendspinServiceController  # noqa: E402
 
 
-async def main_async(controller):
+async def main_async(controller: SendspinServiceController):
     """The async lifecycle with dummy playback kept alive by pre-EOF seeking."""
     log = logger.init_logger()
     log.info("--- Sendspin Persistent Session Starting ---")
@@ -42,6 +42,8 @@ async def main_async(controller):
         last_volume_poll_time = 0.0
         last_seen_sendspin_volume = None
         last_seen_kodi_volume_state = None
+        last_seen_title = None
+        current_duration = 0
 
         # Setup Metadata
         list_item = xbmcgui.ListItem("Sendspin Active")
@@ -99,35 +101,58 @@ async def main_async(controller):
                         f"mapped_sendspin_volume={mapped_volume}"
                     )
 
-            new_metadata = await asyncio.get_running_loop().run_in_executor(None, controller.get_new_metadata)
+            track_info = controller.get_latest_track_info()
+            playback_state = controller.get_latest_playback_state()
 
-            if new_metadata:
-                log.info(f"Applying metadata update for: {new_metadata.get('title')}")
+            # --- HANDLER 1: TRACK METADATA ---
+            if track_info:
+                title = track_info.get("title") or "Unknown Title"
+                artist = track_info.get("artist") or "Unknown Artist"
+                album = track_info.get("album") or "Unknown Album"
 
-                title = str(new_metadata.get("title", "Sendspin Audio"))
-                artist = str(new_metadata.get("artist", "Unknown Artist"))
-                album = str(new_metadata.get("album", "Unknown Album"))
-                thumb = new_metadata.get("artwork_url", "")
+                # Only trigger a UI refresh if the title actually changed
+                if title and title != last_seen_title:
+                    list_item.setLabel(title)
 
-                # 1. Update the ListItem for the upcoming 'restart'
-                list_item.setLabel(title)
-                tag = list_item.getMusicInfoTag()
-                tag.setMediaType("song")  # Essential for v20+
-                tag.setTitle(title)
-                tag.setArtist(artist)
-                tag.setAlbum(album)
+                    tag = list_item.getMusicInfoTag()
+                    tag.setMediaType("song")
+                    tag.setTitle(title)
+                    tag.setArtist(artist)
+                    tag.setAlbum(album)
 
-                if thumb:
-                    list_item.setArt({"thumb": thumb})
+                    list_item.setInfo("music", {"title": title, "artist": artist, "album": album, "mediatype": "song"})
 
-                # 2. Restart the dummy playback to refresh the UI
-                # This refreshes the Player's internal InfoTagMusic
-                # without shutting down the Docker backend.
-                await start_playback()
+                    log.info(f"Track changed to: {tag.getArtist()} - {tag.getTitle()} ({tag.getAlbum()})")
 
-                # 3. Verify the live Player tag (as per documentation)
-                live_tag = player.getMusicInfoTag()
-                log.info(f"UI Update Verified: {live_tag.getTitle()} by {live_tag.getArtist()}")
+                    thumb = track_info.get("artwork_url")
+                    if thumb:
+                        list_item.setArt({"thumb": thumb})
+                    else:
+                        # Clear old artwork if the new track doesn't have any
+                        list_item.setArt({"thumb": "", "poster": "", "fanart": ""})
+
+                    await start_playback()
+                    last_seen_title = title
+
+            # --- HANDLER 2: PLAYBACK STATE ---
+            if playback_state and player.isPlaying():
+                position = playback_state.get("position", 0) + 2  # Add 2 seconds to account for delay
+                duration = playback_state.get("duration", 0)
+                speed = playback_state.get("speed", 1)
+
+                if duration > 0 and duration != current_duration:
+                    player.getMusicInfoTag().setDuration(int(duration))
+                    current_duration = duration
+
+                current_kodi_pos = player.getTime()
+                if abs(current_kodi_pos - position) > 2.0:
+                    player.seekTime(position)
+
+                # 3. Handle Play/Pause State
+                if speed == 0 and player.isPlaying():
+                    player.pause()
+                elif speed > 0 and not player.isPlaying():
+                    player.pause()
 
             if not player.isPlaying():
                 log.info("Dummy playback stopped by user/intervention. Exiting loop.")

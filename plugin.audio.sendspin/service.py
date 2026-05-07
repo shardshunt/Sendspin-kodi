@@ -36,13 +36,11 @@ class SendspinServiceController:
         self.logger.info("Using Kodi to Sendspin volume scale: %s", scale)
         return scale
 
-    def get_new_metadata(self):
-        """Returns metadata if updated, otherwise None."""
-        if self.playback_engine.metadata_updated:
-            # Reset the flag so we only trigger once per update
-            self.playback_engine.metadata_updated = False
-            return self.playback_engine.current_metadata
-        return None
+    def get_latest_track_info(self) -> dict[str, str] | None:
+        return self.playback_engine.get_latest_track_info()
+
+    def get_latest_playback_state(self) -> dict[str, float] | None:
+        return self.playback_engine.get_latest_playback_state()
 
     def _get_audio_device_id(self, device_string: str) -> str:
         """Maps Kodi strings to ALSA indices by matching both hardware numbers and port labels."""
@@ -173,7 +171,7 @@ class SendspinServiceController:
         # Try common safe fallbacks
         candidates = ["ALSA:default", "ALSA:sysdefault", "PULSE:default"]
         for candidate in candidates:
-            if candidate.lower() != self.original_kodi_device.lower():
+            if self.original_kodi_device and candidate.lower() != self.original_kodi_device.lower():
                 if self.kodi.set_audio_output_device(candidate):
                     self.logger.info(f"Switched Kodi audio to {candidate} to free hardware.")
                     break

@@ -30,8 +30,10 @@ class DockerPlaybackEngine:
         self.logged_runtime_volume_limit = False
         # Path to the directory containing the Dockerfile
         self.addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.current_metadata = {}
-        self.metadata_updated = False
+        self.current_track_info = {}
+        self.track_info_updated = False
+        self.current_playback_state = {}
+        self.playback_state_updated = False
 
     def kodi_to_sendspin_volume(self, volume):
         return max(0, min(100, round(int(volume) * self.volume_scale)))
@@ -182,15 +184,43 @@ class DockerPlaybackEngine:
                 cleaned_str = re.sub(r"<\w+\.[^:]+:\s+([^>]+)>", r"\1", payload_str)
 
                 payload = ast.literal_eval(cleaned_str)
-                metadata = payload.get("metadata", {})
+                metadata_payload = payload.get("metadata", {})
 
-                # Check if metadata contains actual content beyond just a timestamp
-                if "title" in metadata and metadata != self.current_metadata:
-                    self.current_metadata = metadata
-                    self.metadata_updated = True
-                    self.logger.info(f"Parsed metadata for: {metadata.get('title')}")
+                # 1. Handle Playback State (High Frequency)
+                progress = metadata_payload.get("progress", {})
+                if progress:
+                    self.current_playback_state = {
+                        "position": progress.get("track_progress", 0) / 1000.0,
+                        "duration": progress.get("track_duration", 0) / 1000.0,
+                        "speed": progress.get("playback_speed", 0),
+                    }
+                    self.playback_state_updated = True
+
+                # 2. Handle Track Info (Low Frequency)
+                # Only process if the payload actually contains a title
+                if metadata_payload.get("title") is not None:
+                    self.current_track_info = {
+                        "title": metadata_payload.get("title"),
+                        "artist": metadata_payload.get("artist"),
+                        "album": metadata_payload.get("album"),
+                        "artwork_url": metadata_payload.get("artwork_url"),
+                    }
+                    self.track_info_updated = True
+
             except Exception as e:
-                self.logger.error(f"Failed to parse metadata line: {e}")
+                self.logger.error(f"Metadata Parse Error: {e}")
+
+    def get_latest_track_info(self) -> dict[str, str] | None:
+        if self.track_info_updated:
+            self.track_info_updated = False
+            return self.current_track_info
+        return None
+
+    def get_latest_playback_state(self) -> dict[str, float] | None:
+        if self.playback_state_updated:
+            self.playback_state_updated = False
+            return self.current_playback_state
+        return None
 
     def start(self):
         if not shutil.which("docker"):
