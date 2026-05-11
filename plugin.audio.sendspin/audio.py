@@ -178,11 +178,8 @@ class DockerPlaybackEngine:
         if "ServerStatePayload:" in line:
             try:
                 payload_str = line.split("ServerStatePayload:", 1)[1]
-
                 # Regex to convert <Enum.VALUE: 'data'> into 'data'
-                # and <Enum.VALUE: False> into False
                 cleaned_str = re.sub(r"<\w+\.[^:]+:\s+([^>]+)>", r"\1", payload_str)
-
                 payload = ast.literal_eval(cleaned_str)
                 metadata_payload = payload.get("metadata", {})
 
@@ -199,12 +196,9 @@ class DockerPlaybackEngine:
                 # 2. Handle Track Info (Low Frequency)
                 # Only process if the payload actually contains a title
                 if metadata_payload.get("title") is not None:
-                    self.current_track_info = {
-                        "title": metadata_payload.get("title"),
-                        "artist": metadata_payload.get("artist"),
-                        "album": metadata_payload.get("album"),
-                        "artwork_url": metadata_payload.get("artwork_url"),
-                    }
+                    for key in ["title", "artist", "album", "artwork_url"]:
+                        if key in metadata_payload:
+                            self.current_track_info[key] = metadata_payload[key]
                     self.track_info_updated = True
 
             except Exception as e:

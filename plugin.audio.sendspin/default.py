@@ -106,7 +106,7 @@ async def main_async(controller: SendspinServiceController):
 
             # --- HANDLER 1: TRACK METADATA ---
             if track_info:
-                title = track_info.get("title") or "Unknown Title"
+                title = track_info.get("title")
                 artist = track_info.get("artist") or "Unknown Artist"
                 album = track_info.get("album") or "Unknown Album"
 
@@ -127,16 +127,13 @@ async def main_async(controller: SendspinServiceController):
                     thumb = track_info.get("artwork_url")
                     if thumb:
                         list_item.setArt({"thumb": thumb})
-                    else:
-                        # Clear old artwork if the new track doesn't have any
-                        list_item.setArt({"thumb": "", "poster": "", "fanart": ""})
 
                     await start_playback()
                     last_seen_title = title
 
             # --- HANDLER 2: PLAYBACK STATE ---
             if playback_state and player.isPlaying():
-                position = playback_state.get("position", 0) + 2  # Add 2 seconds to account for delay
+                position = playback_state.get("position", 0)
                 duration = playback_state.get("duration", 0)
                 speed = playback_state.get("speed", 1)
 
