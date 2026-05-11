@@ -35,10 +35,10 @@ class DockerPlaybackEngine:
         self.current_playback_state = {}
         self.playback_state_updated = False
 
-    def kodi_to_sendspin_volume(self, volume):
+    def kodi_to_sendspin_volume(self, volume) -> int:
         return max(0, min(100, round(int(volume) * self.volume_scale)))
 
-    def sendspin_to_kodi_volume(self, volume):
+    def sendspin_to_kodi_volume(self, volume) -> int:
         if self.volume_scale <= 0:
             self.logger.warning("Volume scale is non-positive; using fallback scale 0.3")
             self.volume_scale = 0.3
@@ -79,7 +79,7 @@ class DockerPlaybackEngine:
             settings["player_muted"],
         )
 
-    def write_kodi_volume_to_settings(self, volume, muted):
+    def write_kodi_volume_to_settings(self, volume, muted) -> int:
         """Persist Kodi volume for Sendspin's next config read.
 
         Sendspin daemon does not currently reload this file while running.
@@ -105,7 +105,7 @@ class DockerPlaybackEngine:
             )
         return sendspin_volume
 
-    def read_volume_state(self):
+    def read_volume_state(self) -> int | None:
         try:
             with open(self.volume_state_path, encoding="utf-8") as file:
                 data = json.load(file)
@@ -117,7 +117,7 @@ class DockerPlaybackEngine:
         except (KeyError, TypeError, ValueError):
             return None
 
-    def _ensure_image_exists(self):
+    def _ensure_image_exists(self) -> bool:
         """Checks if the docker image exists; if not, attempts to build it."""
         check_cmd = ["docker", "images", "-q", self.image_name]
         result = subprocess.run(check_cmd, capture_output=True, text=True)
