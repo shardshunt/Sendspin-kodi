@@ -133,7 +133,9 @@ async def main_async(controller: SendspinServiceController):
 
             # --- HANDLER 2: PLAYBACK STATE ---
             if playback_state and player.isPlaying():
-                position = playback_state.get("position", 0)
+                position = (
+                    playback_state.get("position", 0) + 2
+                )  # Add small offset to account for delay between position updates and Kodi seeking
                 duration = playback_state.get("duration", 0)
                 speed = playback_state.get("speed", 1)
 
@@ -142,13 +144,19 @@ async def main_async(controller: SendspinServiceController):
                     current_duration = duration
 
                 current_kodi_pos = player.getTime()
-                if abs(current_kodi_pos - position) > 2.0:
+                if abs(current_kodi_pos - position) > 1.0:
                     player.seekTime(position)
 
+                is_kodi_paused = not player.isPlaying()
+                log.info(f"Kodi playback state - Paused: {is_kodi_paused}")
+
                 # 3. Handle Play/Pause State
-                if speed == 0 and player.isPlaying():
+                is_kodi_paused = xbmc.getCondVisibility("Player.Paused")
+                if speed == 0 and not is_kodi_paused:
+                    log.info("Sendspin paused; pausing Kodi.")
                     player.pause()
-                elif speed > 0 and not player.isPlaying():
+                elif speed > 0 and is_kodi_paused:
+                    log.info("Sendspin resumed; resuming Kodi.")
                     player.pause()
 
             if not player.isPlaying():

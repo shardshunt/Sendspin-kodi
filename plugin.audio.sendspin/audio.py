@@ -175,6 +175,11 @@ class DockerPlaybackEngine:
 
     def _parse_metadata(self, line):
         """Extracts and cleans metadata from Sendspin log payloads."""
+        if "Stream STARTED" in line:
+            self.current_playback_state["speed"] = 1000
+            self.playback_state_updated = True
+            self.logger.info("Sendspin stream started/resumed; updating state.")
+
         if "ServerStatePayload:" in line:
             try:
                 payload_str = line.split("ServerStatePayload:", 1)[1]
