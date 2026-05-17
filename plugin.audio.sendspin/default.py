@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+from urllib.parse import parse_qs
 
 import xbmcaddon
 import xbmcgui
@@ -21,6 +22,45 @@ import logger  # noqa: E402
 from service import SendspinServiceController  # noqa: E402
 
 
+class SendspinKodiPlayer(xbmc.Player):
+    def __init__(self, controller: SendspinServiceController):
+        super().__init__()
+        self.controller = controller
+
+    def onPlayBackPaused(self):  # noqa: N802 - Kodi callback name
+        self.controller.handle_kodi_pause()
+
+    def onPlayBackResumed(self):  # noqa: N802 - Kodi callback name
+        self.controller.handle_kodi_resume()
+
+
+def handle_plugin_action(controller: SendspinServiceController) -> bool:
+    try:
+        query = sys.argv[2].lstrip("?")
+    except IndexError:
+        return False
+
+    action = parse_qs(query).get("action", [""])[0]
+    if not action:
+        return False
+
+    actions = {
+        "play": controller.send_play,
+        "pause": controller.send_pause,
+        "playpause": controller.send_play_pause,
+        "toggle_play_pause": controller.send_play_pause,
+        "next": controller.send_next_track,
+        "previous": controller.send_previous_track,
+    }
+    handler = actions.get(action)
+    if handler is None:
+        xbmc.log(f"[Sendspin] Unknown plugin action: {action}", xbmc.LOGWARNING)
+        return True
+
+    handler()
+    return True
+
+
 async def main_async(controller: SendspinServiceController):
     """The async lifecycle with dummy playback kept alive by pre-EOF seeking."""
     log = logger.init_logger()
@@ -31,7 +71,7 @@ async def main_async(controller: SendspinServiceController):
         await controller.setup()
 
         monitor = xbmc.Monitor()
-        player = xbmc.Player()
+        player = SendspinKodiPlayer(controller)
         dummy_path = os.path.join(ADDON_PATH, "resources", "silent.mp3")
 
         # Future improvement: make this dummy track long-lived, e.g. around an hour,
@@ -154,9 +194,11 @@ async def main_async(controller: SendspinServiceController):
                 is_kodi_paused = xbmc.getCondVisibility("Player.Paused")
                 if speed == 0 and not is_kodi_paused:
                     log.info("Sendspin paused; pausing Kodi.")
+                    controller.suppress_kodi_player_events()
                     player.pause()
                 elif speed > 0 and is_kodi_paused:
                     log.info("Sendspin resumed; resuming Kodi.")
+                    controller.suppress_kodi_player_events()
                     player.pause()
 
             if not player.isPlaying():
@@ -192,12 +234,18 @@ async def main_async(controller: SendspinServiceController):
 
 
 if __name__ == "__main__":
+    logger.init_logger()
+
     # Prevent GUI hangs by resolving the directory call immediately
     try:
         handle = int(sys.argv[1])
         xbmcplugin.endOfDirectory(handle, succeeded=True, cacheToDisc=False)
     except (IndexError, ValueError):
         pass
+
+    controller = SendspinServiceController()
+    if handle_plugin_action(controller):
+        sys.exit()
 
     # Multi-instance guard to prevent multiple controllers fighting for ALSA
     win = xbmcgui.Window(10000)
@@ -207,7 +255,6 @@ if __name__ == "__main__":
     win.setProperty(f"{ADDON_ID}.running", "true")
 
     try:
-        controller = SendspinServiceController()
         asyncio.run(main_async(controller))
     except Exception as e:
         xbmc.log(f"[Sendspin] Fatal Startup Error: {e}", xbmc.LOGERROR)

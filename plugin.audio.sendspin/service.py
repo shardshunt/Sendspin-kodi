@@ -1,9 +1,11 @@
 import logging
 import re
 import subprocess
+import time
 
 import xbmcaddon
 from audio import DockerPlaybackEngine
+from control import SendspinControlClient
 from kodi import KodiManager
 
 
@@ -11,14 +13,21 @@ class SendspinServiceController:
     def __init__(self) -> None:
         self.logger = logging.getLogger("sendspin")
         addon = xbmcaddon.Addon()
+        control_url = addon.getSetting("control_url") or self._control_url_from_port(addon)
         self.playback_engine = DockerPlaybackEngine(
             image_name=addon.getSetting("docker_image_name") or "sendspin-local",
             container_name=addon.getSetting("docker_container_name") or "sendspin-player",
             config_dir=addon.getSetting("docker_config_dir") or "/storage/.config/sendspin",
             volume_scale=self._get_volume_scale(addon),
         )
+        self.control = SendspinControlClient(control_url)
         self.kodi = KodiManager()
         self.original_kodi_device = None
+        self._suppress_kodi_player_events_until = 0.0
+
+    def _control_url_from_port(self, addon) -> str:
+        port = addon.getSetting("proxy_port") or "59999"
+        return f"http://127.0.0.1:{port}"
 
     def _get_volume_scale(self, addon) -> float:
         fallback = 0.3
@@ -189,10 +198,48 @@ class SendspinServiceController:
         return kodi_volume
 
     def apply_kodi_volume_to_sendspin(self, volume_state):
+        sendspin_volume = self.playback_engine.kodi_to_sendspin_volume(volume_state["volume"])
+        if self.control.set_volume(sendspin_volume, volume_state["muted"]):
+            return sendspin_volume
+
         return self.playback_engine.write_kodi_volume_to_settings(
             volume_state["volume"],
             volume_state["muted"],
         )
+
+    def suppress_kodi_player_events(self, seconds: float = 1.5) -> None:
+        self._suppress_kodi_player_events_until = time.monotonic() + seconds
+
+    def _should_forward_kodi_player_event(self) -> bool:
+        return time.monotonic() >= self._suppress_kodi_player_events_until
+
+    def handle_kodi_pause(self) -> None:
+        if self._should_forward_kodi_player_event():
+            self.logger.info("Forwarding Kodi pause to Sendspin.")
+            self.control.pause()
+
+    def handle_kodi_resume(self) -> None:
+        if self._should_forward_kodi_player_event():
+            self.logger.info("Forwarding Kodi resume to Sendspin.")
+            self.control.play()
+
+    def send_play(self) -> bool:
+        return self.control.play()
+
+    def send_pause(self) -> bool:
+        return self.control.pause()
+
+    def send_play_pause(self) -> bool:
+        return self.control.toggle_play_pause()
+
+    def send_next_track(self) -> bool:
+        return self.control.next_track()
+
+    def send_previous_track(self) -> bool:
+        return self.control.previous_track()
+
+    def send_seek(self, position: float) -> bool:
+        return self.control.seek(position)
 
     async def cleanup(self) -> None:
         # Stop container and restore audio device[cite: 1, 3, 5]
