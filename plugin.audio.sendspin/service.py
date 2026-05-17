@@ -19,6 +19,7 @@ class SendspinServiceController:
             container_name=addon.getSetting("docker_container_name") or "sendspin-player",
             config_dir=addon.getSetting("docker_config_dir") or "/storage/.config/sendspin",
             volume_scale=self._get_volume_scale(addon),
+            control_url=control_url,
         )
         self.control = SendspinControlClient(control_url)
         self.kodi = KodiManager()
@@ -45,11 +46,8 @@ class SendspinServiceController:
         self.logger.info("Using Kodi to Sendspin volume scale: %s", scale)
         return scale
 
-    def get_latest_track_info(self) -> dict[str, str] | None:
-        return self.playback_engine.get_latest_track_info()
-
-    def get_latest_playback_state(self) -> dict[str, float] | None:
-        return self.playback_engine.get_latest_playback_state()
+    def get_sendspin_state(self) -> dict | None:
+        return self.control.get_state()
 
     def _get_audio_device_id(self, device_string: str) -> str:
         """Maps Kodi strings to ALSA indices by matching both hardware numbers and port labels."""
@@ -188,24 +186,16 @@ class SendspinServiceController:
     def get_kodi_volume_state(self):
         return self.kodi.get_volume_state()
 
-    def get_sendspin_volume(self):
-        return self.playback_engine.read_volume_state()
-
-    def apply_sendspin_volume_to_kodi(self, volume):
+    def apply_sendspin_volume_to_kodi(self, volume, muted=False):
         kodi_volume = self.playback_engine.sendspin_to_kodi_volume(volume)
-        self.kodi.set_muted(kodi_volume == 0)
+        self.kodi.set_muted(bool(muted))
         self.kodi.set_volume(kodi_volume)
         return kodi_volume
 
     def apply_kodi_volume_to_sendspin(self, volume_state):
         sendspin_volume = self.playback_engine.kodi_to_sendspin_volume(volume_state["volume"])
-        if self.control.set_volume(sendspin_volume, volume_state["muted"]):
-            return sendspin_volume
-
-        return self.playback_engine.write_kodi_volume_to_settings(
-            volume_state["volume"],
-            volume_state["muted"],
-        )
+        self.control.set_volume(sendspin_volume, volume_state["muted"])
+        return sendspin_volume
 
     def suppress_kodi_player_events(self, seconds: float = 1.5) -> None:
         self._suppress_kodi_player_events_until = time.monotonic() + seconds

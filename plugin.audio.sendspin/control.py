@@ -39,6 +39,27 @@ class SendspinControlClient:
     def seek(self, position: float) -> bool:
         return self.command("seek", position=max(0.0, float(position)))
 
+    def get_state(self) -> dict | None:
+        return self._get("/state")
+
+    def _get(self, path: str) -> dict | None:
+        request = urllib.request.Request(f"{self.base_url}{path}", method="GET")
+
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                if not 200 <= response.status < 300:
+                    self.logger.warning("Sendspin state request failed: status=%s", response.status)
+                    return None
+
+                self._logged_unavailable = False
+                payload = response.read().decode("utf-8")
+                return json.loads(payload)
+        except (json.JSONDecodeError, urllib.error.URLError, TimeoutError, OSError) as e:
+            if not self._logged_unavailable:
+                self._logged_unavailable = True
+                self.logger.warning("Sendspin control API unavailable at %s: %s", self.base_url, e)
+            return None
+
     def _post(self, path: str, payload: dict) -> bool:
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(

@@ -61,6 +61,24 @@ def handle_plugin_action(controller: SendspinServiceController) -> bool:
     return True
 
 
+def get_state_volume(state: dict) -> tuple[int, bool] | None:
+    volume_payload = state.get("volume")
+    if isinstance(volume_payload, dict):
+        sendspin_volume = volume_payload.get("volume")
+        muted = volume_payload.get("muted", False)
+    else:
+        sendspin_volume = volume_payload
+        muted = False
+
+    if sendspin_volume is None:
+        return None
+
+    try:
+        return max(0, min(100, int(sendspin_volume))), bool(muted)
+    except (TypeError, ValueError):
+        return None
+
+
 async def main_async(controller: SendspinServiceController):
     """The async lifecycle with dummy playback kept alive by pre-EOF seeking."""
     log = logger.init_logger()
@@ -80,7 +98,7 @@ async def main_async(controller: SendspinServiceController):
         poll_interval_seconds = 0.5
         volume_poll_interval_seconds = 1.0
         last_volume_poll_time = 0.0
-        last_seen_sendspin_volume = None
+        last_seen_sendspin_volume_state = None
         last_seen_kodi_volume_state = None
         last_seen_title = None
         current_duration = 0
@@ -110,23 +128,31 @@ async def main_async(controller: SendspinServiceController):
 
         while not monitor.abortRequested():
             loop_time = asyncio.get_running_loop().time()
+            sendspin_state = await asyncio.get_running_loop().run_in_executor(None, controller.get_sendspin_state)
+            track_info = {}
+            playback_state = {}
+            sendspin_volume_state = None
+
+            if sendspin_state:
+                track_info = sendspin_state.get("track") or {}
+                playback_state = sendspin_state.get("playback") or {}
+                sendspin_volume_state = get_state_volume(sendspin_state)
+
             if loop_time - last_volume_poll_time >= volume_poll_interval_seconds:
                 last_volume_poll_time = loop_time
-                sendspin_volume = await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    controller.get_sendspin_volume,
-                )
                 kodi_volume_state = controller.get_kodi_volume_state()
 
-                if last_seen_sendspin_volume is None:
-                    last_seen_sendspin_volume = sendspin_volume
-                elif sendspin_volume is not None and sendspin_volume != last_seen_sendspin_volume:
-                    last_seen_sendspin_volume = sendspin_volume
-                    kodi_volume = controller.apply_sendspin_volume_to_kodi(sendspin_volume)
+                if last_seen_sendspin_volume_state is None:
+                    last_seen_sendspin_volume_state = sendspin_volume_state
+                elif sendspin_volume_state is not None and sendspin_volume_state != last_seen_sendspin_volume_state:
+                    last_seen_sendspin_volume_state = sendspin_volume_state
+                    sendspin_volume, sendspin_muted = sendspin_volume_state
+                    kodi_volume = controller.apply_sendspin_volume_to_kodi(sendspin_volume, sendspin_muted)
                     kodi_volume_state = controller.get_kodi_volume_state()
                     last_seen_kodi_volume_state = kodi_volume_state
                     log.info(
-                        f"Applied Sendspin volume to Kodi: sendspin_volume={sendspin_volume} kodi_volume={kodi_volume}"
+                        "Applied Sendspin volume to Kodi: "
+                        f"sendspin_volume={sendspin_volume} muted={sendspin_muted} kodi_volume={kodi_volume}"
                     )
 
                 if last_seen_kodi_volume_state is None:
@@ -140,9 +166,6 @@ async def main_async(controller: SendspinServiceController):
                         f"muted={kodi_volume_state['muted']} "
                         f"mapped_sendspin_volume={mapped_volume}"
                     )
-
-            track_info = controller.get_latest_track_info()
-            playback_state = controller.get_latest_playback_state()
 
             # --- HANDLER 1: TRACK METADATA ---
             if track_info:

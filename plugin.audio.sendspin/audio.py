@@ -1,12 +1,11 @@
-import ast
 import json
 import logging
 import os
-import re
 import shlex
 import shutil
 import subprocess
 import threading
+from urllib.parse import urlparse
 
 
 class DockerPlaybackEngine:
@@ -17,23 +16,19 @@ class DockerPlaybackEngine:
         config_dir="/storage/.config/sendspin",
         audio_device="0",
         volume_scale=10 / 30,
+        control_url="http://127.0.0.1:59999",
     ):
         self.logger = logging.getLogger("sendspin")
         self.image_name = image_name
         self.container_name = container_name
         self.config_dir = config_dir
         self.audio_device = audio_device
+        self.control_url = control_url
         self.log_process = None
         self.log_thread = None
-        self.volume_state_path = os.path.join(self.config_dir, "kodi-volume.json")
         self.volume_scale = volume_scale
-        self.logged_runtime_volume_limit = False
         # Path to the directory containing the Dockerfile
         self.addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.current_track_info = {}
-        self.track_info_updated = False
-        self.current_playback_state = {}
-        self.playback_state_updated = False
 
     def kodi_to_sendspin_volume(self, volume) -> int:
         return max(0, min(100, round(int(volume) * self.volume_scale)))
@@ -69,53 +64,12 @@ class DockerPlaybackEngine:
         settings.pop("hook_set_volume", None)
         self._write_json_file(settings_path, settings)
 
-        effective_volume = 0 if settings["player_muted"] else settings["player_volume"]
-        self._write_json_file(self.volume_state_path, {"volume": effective_volume})
-
         self.logger.info(
             "Configured Sendspin volume sync: kodi_volume=%s sendspin_volume=%s muted=%s",
             volume,
             settings["player_volume"],
             settings["player_muted"],
         )
-
-    def write_kodi_volume_to_settings(self, volume, muted) -> int:
-        """Persist Kodi volume for Sendspin's next config read.
-
-        Sendspin daemon does not currently reload this file while running.
-        """
-        sendspin_volume = self.kodi_to_sendspin_volume(volume)
-        settings_path = os.path.join(self.config_dir, "settings-daemon.json")
-        try:
-            with open(settings_path, encoding="utf-8") as file:
-                settings = json.load(file)
-        except (FileNotFoundError, ValueError):
-            settings = {}
-
-        settings["player_volume"] = sendspin_volume
-        settings["player_muted"] = bool(muted)
-        settings["use_hardware_volume"] = False
-        settings.pop("hook_set_volume", None)
-        self._write_json_file(settings_path, settings)
-        if not self.logged_runtime_volume_limit:
-            self.logged_runtime_volume_limit = True
-            self.logger.warning(
-                "Kodi volume was persisted for Sendspin's next start, but the running "
-                "sendspin daemon does not reload settings-daemon.json at runtime."
-            )
-        return sendspin_volume
-
-    def read_volume_state(self) -> int | None:
-        try:
-            with open(self.volume_state_path, encoding="utf-8") as file:
-                data = json.load(file)
-        except (FileNotFoundError, ValueError):
-            return None
-
-        try:
-            return max(0, min(100, int(data["volume"])))
-        except (KeyError, TypeError, ValueError):
-            return None
 
     def _ensure_image_exists(self) -> bool:
         """Checks if the docker image exists; if not, attempts to build it."""
@@ -150,7 +104,7 @@ class DockerPlaybackEngine:
         return True
 
     def _stream_logs(self):
-        """Background worker to capture docker logs and send them to Kodi."""
+        """Background worker to forward Docker logs to Kodi for diagnostics."""
         # Using -f (follow) to keep the stream open
         cmd = ["docker", "logs", "-f", "--tail", "0", self.container_name]
         self.log_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -158,68 +112,14 @@ class DockerPlaybackEngine:
         if self.log_process.stdout is not None:
             for line in self.log_process.stdout:
                 if line:
-                    self._capture_volume_from_log(line)
-                    self._parse_metadata(line)
                     self.logger.info(f"DOCKER: {line.strip()}")
 
         if self.log_process.stdout:
             self.log_process.stdout.close()
 
-    def _capture_volume_from_log(self, line):
-        match = re.search(r"Server set player volume: (\d+)%", line)
-        if not match:
-            return
-
-        volume = max(0, min(100, int(match.group(1))))
-        self._write_json_file(self.volume_state_path, {"volume": volume})
-
-    def _parse_metadata(self, line):
-        """Extracts and cleans metadata from Sendspin log payloads."""
-        if "Stream STARTED" in line:
-            self.current_playback_state["speed"] = 1000
-            self.playback_state_updated = True
-            self.logger.info("Sendspin stream started/resumed; updating state.")
-
-        if "ServerStatePayload:" in line:
-            try:
-                payload_str = line.split("ServerStatePayload:", 1)[1]
-                # Regex to convert <Enum.VALUE: 'data'> into 'data'
-                cleaned_str = re.sub(r"<\w+\.[^:]+:\s+([^>]+)>", r"\1", payload_str)
-                payload = ast.literal_eval(cleaned_str)
-                metadata_payload = payload.get("metadata", {})
-
-                # 1. Handle Playback State (High Frequency)
-                progress = metadata_payload.get("progress", {})
-                if progress:
-                    self.current_playback_state = {
-                        "position": progress.get("track_progress", 0) / 1000.0,
-                        "duration": progress.get("track_duration", 0) / 1000.0,
-                        "speed": progress.get("playback_speed", 0),
-                    }
-                    self.playback_state_updated = True
-
-                # 2. Handle Track Info (Low Frequency)
-                # Only process if the payload actually contains a title
-                if metadata_payload.get("title") is not None:
-                    for key in ["title", "artist", "album", "artwork_url"]:
-                        if key in metadata_payload:
-                            self.current_track_info[key] = metadata_payload[key]
-                    self.track_info_updated = True
-
-            except Exception as e:
-                self.logger.error(f"Metadata Parse Error: {e}")
-
-    def get_latest_track_info(self) -> dict[str, str] | None:
-        if self.track_info_updated:
-            self.track_info_updated = False
-            return self.current_track_info
-        return None
-
-    def get_latest_playback_state(self) -> dict[str, float] | None:
-        if self.playback_state_updated:
-            self.playback_state_updated = False
-            return self.current_playback_state
-        return None
+    def _control_host_port(self) -> tuple[str, str]:
+        parsed = urlparse(self.control_url)
+        return parsed.hostname or "127.0.0.1", str(parsed.port or 59999)
 
     def start(self):
         if not shutil.which("docker"):
@@ -232,6 +132,7 @@ class DockerPlaybackEngine:
 
         self.stop()
         self.logger.info(f"Starting Docker container: {self.container_name}")
+        control_host, control_port = self._control_host_port()
 
         cmd = [
             "docker",
@@ -252,8 +153,12 @@ class DockerPlaybackEngine:
             self.audio_device,
             "--hardware-volume",
             "false",
-            "--metadata",
+            "--control-api",
             "true",
+            "--control-host",
+            control_host,
+            "--control-port",
+            control_port,
         ]
 
         executable_command = shlex.join(cmd)
