@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uv/bin/uv
 ENV PATH="/uv/bin:$PATH"
 WORKDIR /app
-RUN uv pip install --system "git+https://github.com/shardshunt/sendspin-cli-for-sendspin-kodi.git@extend-logging-deamon"
+RUN uv pip install --system "git+https://github.com/shardshunt/sendspin-cli-for-sendspin-kodi.git@move-to-two-way-API-based-communication"
 RUN mkdir -p /root/.config/sendspin
 
 # Set the entrypoint to the daemon mode
