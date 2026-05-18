@@ -34,7 +34,7 @@ class KodiManager:
         response = json.loads(xbmc.executeJSONRPC(json.dumps(query)))
         return response.get("result")
 
-    def get_volume_state(self) -> dict:
+    def get_volume_state(self) -> dict[str, int | bool]:
         query = {
             "jsonrpc": "2.0",
             "method": "Application.GetProperties",

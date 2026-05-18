@@ -1,9 +1,11 @@
 import logging
 import re
 import subprocess
+import time
 
 import xbmcaddon
 from audio import DockerPlaybackEngine
+from control import SendspinControlClient
 from kodi import KodiManager
 
 
@@ -11,14 +13,22 @@ class SendspinServiceController:
     def __init__(self) -> None:
         self.logger = logging.getLogger("sendspin")
         addon = xbmcaddon.Addon()
+        control_url = addon.getSetting("control_url") or self._control_url_from_port(addon)
         self.playback_engine = DockerPlaybackEngine(
             image_name=addon.getSetting("docker_image_name") or "sendspin-local",
             container_name=addon.getSetting("docker_container_name") or "sendspin-player",
             config_dir=addon.getSetting("docker_config_dir") or "/storage/.config/sendspin",
             volume_scale=self._get_volume_scale(addon),
+            control_url=control_url,
         )
+        self.control = SendspinControlClient(control_url)
         self.kodi = KodiManager()
         self.original_kodi_device = None
+        self._suppress_kodi_player_events_until = 0.0
+
+    def _control_url_from_port(self, addon) -> str:
+        port = addon.getSetting("proxy_port") or "59999"
+        return f"http://127.0.0.1:{port}"
 
     def _get_volume_scale(self, addon) -> float:
         fallback = 0.3
@@ -35,6 +45,9 @@ class SendspinServiceController:
 
         self.logger.info("Using Kodi to Sendspin volume scale: %s", scale)
         return scale
+
+    def get_sendspin_state(self) -> dict | None:
+        return self.control.get_state()
 
     def _get_audio_device_id(self, device_string: str) -> str:
         """Maps Kodi strings to ALSA indices by matching both hardware numbers and port labels."""
@@ -147,22 +160,25 @@ class SendspinServiceController:
         if override:
             audio_device_id = override
             self.logger.info(f"Using audio device override: {audio_device_id}")
-        else:
+        elif self.original_kodi_device is not None:
             audio_device_id = self._get_audio_device_id(self.original_kodi_device)
             self.logger.info(f"Extracted audio device ID: {audio_device_id}")
+        else:
+            audio_device_id = xbmcaddon.Addon().getSetting("fallback_audio_device") or "0"
+            self.logger.warning(f"No original Kodi device found; using fallback: {audio_device_id}")
         self.playback_engine.audio_device = audio_device_id
 
         # If ALSA is active, move Kodi to an alternate to avoid hardware locking[cite: 1, 5]
         if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
             self._switch_to_alternate()
 
-        self.playback_engine.start()  #
+        self.playback_engine.start()
 
     def _switch_to_alternate(self):
-        # Try common safe fallbacks[cite: 5]
+        # Try common safe fallbacks
         candidates = ["ALSA:default", "ALSA:sysdefault", "PULSE:default"]
         for candidate in candidates:
-            if candidate.lower() != self.original_kodi_device.lower():
+            if self.original_kodi_device and candidate.lower() != self.original_kodi_device.lower():
                 if self.kodi.set_audio_output_device(candidate):
                     self.logger.info(f"Switched Kodi audio to {candidate} to free hardware.")
                     break
@@ -170,20 +186,50 @@ class SendspinServiceController:
     def get_kodi_volume_state(self):
         return self.kodi.get_volume_state()
 
-    def get_sendspin_volume(self):
-        return self.playback_engine.read_volume_state()
-
-    def apply_sendspin_volume_to_kodi(self, volume):
+    def apply_sendspin_volume_to_kodi(self, volume, muted=False):
         kodi_volume = self.playback_engine.sendspin_to_kodi_volume(volume)
-        self.kodi.set_muted(kodi_volume == 0)
+        self.kodi.set_muted(bool(muted))
         self.kodi.set_volume(kodi_volume)
         return kodi_volume
 
     def apply_kodi_volume_to_sendspin(self, volume_state):
-        return self.playback_engine.write_kodi_volume_to_settings(
-            volume_state["volume"],
-            volume_state["muted"],
-        )
+        sendspin_volume = self.playback_engine.kodi_to_sendspin_volume(volume_state["volume"])
+        self.control.set_volume(sendspin_volume, volume_state["muted"])
+        return sendspin_volume
+
+    def suppress_kodi_player_events(self, seconds: float = 1.5) -> None:
+        self._suppress_kodi_player_events_until = time.monotonic() + seconds
+
+    def _should_forward_kodi_player_event(self) -> bool:
+        return time.monotonic() >= self._suppress_kodi_player_events_until
+
+    def handle_kodi_pause(self) -> None:
+        if self._should_forward_kodi_player_event():
+            self.logger.info("Forwarding Kodi pause to Sendspin.")
+            self.control.pause()
+
+    def handle_kodi_resume(self) -> None:
+        if self._should_forward_kodi_player_event():
+            self.logger.info("Forwarding Kodi resume to Sendspin.")
+            self.control.play()
+
+    def send_play(self) -> bool:
+        return self.control.play()
+
+    def send_pause(self) -> bool:
+        return self.control.pause()
+
+    def send_play_pause(self) -> bool:
+        return self.control.toggle_play_pause()
+
+    def send_next_track(self) -> bool:
+        return self.control.next_track()
+
+    def send_previous_track(self) -> bool:
+        return self.control.previous_track()
+
+    def send_seek(self, position: float) -> bool:
+        return self.control.seek(position)
 
     async def cleanup(self) -> None:
         # Stop container and restore audio device[cite: 1, 3, 5]

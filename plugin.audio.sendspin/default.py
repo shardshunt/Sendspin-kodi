@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+from urllib.parse import parse_qs
 
 import xbmcaddon
 import xbmcgui
@@ -21,7 +22,64 @@ import logger  # noqa: E402
 from service import SendspinServiceController  # noqa: E402
 
 
-async def main_async(controller):
+class SendspinKodiPlayer(xbmc.Player):
+    def __init__(self, controller: SendspinServiceController):
+        super().__init__()
+        self.controller = controller
+
+    def onPlayBackPaused(self):  # noqa: N802 - Kodi callback name
+        self.controller.handle_kodi_pause()
+
+    def onPlayBackResumed(self):  # noqa: N802 - Kodi callback name
+        self.controller.handle_kodi_resume()
+
+
+def handle_plugin_action(controller: SendspinServiceController) -> bool:
+    try:
+        query = sys.argv[2].lstrip("?")
+    except IndexError:
+        return False
+
+    action = parse_qs(query).get("action", [""])[0]
+    if not action:
+        return False
+
+    actions = {
+        "play": controller.send_play,
+        "pause": controller.send_pause,
+        "playpause": controller.send_play_pause,
+        "toggle_play_pause": controller.send_play_pause,
+        "next": controller.send_next_track,
+        "previous": controller.send_previous_track,
+    }
+    handler = actions.get(action)
+    if handler is None:
+        xbmc.log(f"[Sendspin] Unknown plugin action: {action}", xbmc.LOGWARNING)
+        return True
+
+    handler()
+    return True
+
+
+def get_state_volume(state: dict) -> tuple[int, bool] | None:
+    volume_payload = state.get("volume")
+    if isinstance(volume_payload, dict):
+        sendspin_volume = volume_payload.get("volume")
+        muted = volume_payload.get("muted", False)
+    else:
+        sendspin_volume = volume_payload
+        muted = False
+
+    if sendspin_volume is None:
+        return None
+
+    try:
+        return max(0, min(100, int(sendspin_volume))), bool(muted)
+    except (TypeError, ValueError):
+        return None
+
+
+async def main_async(controller: SendspinServiceController):
     """The async lifecycle with dummy playback kept alive by pre-EOF seeking."""
     log = logger.init_logger()
     log.info("--- Sendspin Persistent Session Starting ---")
@@ -31,7 +89,7 @@ async def main_async(controller):
         await controller.setup()
 
         monitor = xbmc.Monitor()
-        player = xbmc.Player()
+        player = SendspinKodiPlayer(controller)
         dummy_path = os.path.join(ADDON_PATH, "resources", "silent.mp3")
 
         # Future improvement: make this dummy track long-lived, e.g. around an hour,
@@ -40,8 +98,10 @@ async def main_async(controller):
         poll_interval_seconds = 0.5
         volume_poll_interval_seconds = 1.0
         last_volume_poll_time = 0.0
-        last_seen_sendspin_volume = None
+        last_seen_sendspin_volume_state = None
         last_seen_kodi_volume_state = None
+        last_seen_title = None
+        current_duration = 0
 
         # Setup Metadata
         list_item = xbmcgui.ListItem("Sendspin Active")
@@ -68,23 +128,31 @@ async def main_async(controller):
 
         while not monitor.abortRequested():
             loop_time = asyncio.get_running_loop().time()
+            sendspin_state = await asyncio.get_running_loop().run_in_executor(None, controller.get_sendspin_state)
+            track_info = {}
+            playback_state = {}
+            sendspin_volume_state = None
+
+            if sendspin_state:
+                track_info = sendspin_state.get("track") or {}
+                playback_state = sendspin_state.get("playback") or {}
+                sendspin_volume_state = get_state_volume(sendspin_state)
+
             if loop_time - last_volume_poll_time >= volume_poll_interval_seconds:
                 last_volume_poll_time = loop_time
-                sendspin_volume = await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    controller.get_sendspin_volume,
-                )
                 kodi_volume_state = controller.get_kodi_volume_state()
 
-                if last_seen_sendspin_volume is None:
-                    last_seen_sendspin_volume = sendspin_volume
-                elif sendspin_volume is not None and sendspin_volume != last_seen_sendspin_volume:
-                    last_seen_sendspin_volume = sendspin_volume
-                    kodi_volume = controller.apply_sendspin_volume_to_kodi(sendspin_volume)
+                if last_seen_sendspin_volume_state is None:
+                    last_seen_sendspin_volume_state = sendspin_volume_state
+                elif sendspin_volume_state is not None and sendspin_volume_state != last_seen_sendspin_volume_state:
+                    last_seen_sendspin_volume_state = sendspin_volume_state
+                    sendspin_volume, sendspin_muted = sendspin_volume_state
+                    kodi_volume = controller.apply_sendspin_volume_to_kodi(sendspin_volume, sendspin_muted)
                     kodi_volume_state = controller.get_kodi_volume_state()
                     last_seen_kodi_volume_state = kodi_volume_state
                     log.info(
-                        f"Applied Sendspin volume to Kodi: sendspin_volume={sendspin_volume} kodi_volume={kodi_volume}"
+                        "Applied Sendspin volume to Kodi: "
+                        f"sendspin_volume={sendspin_volume} muted={sendspin_muted} kodi_volume={kodi_volume}"
                     )
 
                 if last_seen_kodi_volume_state is None:
@@ -98,6 +166,60 @@ async def main_async(controller):
                         f"muted={kodi_volume_state['muted']} "
                         f"mapped_sendspin_volume={mapped_volume}"
                     )
+
+            # --- HANDLER 1: TRACK METADATA ---
+            if track_info:
+                title = track_info.get("title")
+                artist = track_info.get("artist") or "Unknown Artist"
+                album = track_info.get("album") or "Unknown Album"
+
+                # Only trigger a UI refresh if the title actually changed
+                if title and title != last_seen_title:
+                    list_item.setLabel(title)
+
+                    tag = list_item.getMusicInfoTag()
+                    tag.setMediaType("song")
+                    tag.setTitle(title)
+                    tag.setArtist(artist)
+                    tag.setAlbum(album)
+
+                    list_item.setInfo("music", {"title": title, "artist": artist, "album": album, "mediatype": "song"})
+
+                    log.info(f"Track changed to: {tag.getArtist()} - {tag.getTitle()} ({tag.getAlbum()})")
+
+                    thumb = track_info.get("artwork_url")
+                    if thumb:
+                        list_item.setArt({"thumb": thumb})
+
+                    await start_playback()
+                    last_seen_title = title
+
+            # --- HANDLER 2: PLAYBACK STATE ---
+            if playback_state and player.isPlaying():
+                position = playback_state.get("position", 0)
+                duration = playback_state.get("duration", 0)
+                speed = playback_state.get("speed", 1)
+
+                if duration > 0 and duration != current_duration:
+                    player.getMusicInfoTag().setDuration(int(duration))
+                    current_duration = duration
+
+                current_kodi_pos = player.getTime()
+                if abs(current_kodi_pos - position) > 1.0:
+                    player.seekTime(position)
+
+                is_kodi_paused = not player.isPlaying()
+
+                # 3. Handle Play/Pause State
+                is_kodi_paused = xbmc.getCondVisibility("Player.Paused")
+                if speed == 0 and not is_kodi_paused:
+                    log.info("Sendspin paused; pausing Kodi.")
+                    controller.suppress_kodi_player_events()
+                    player.pause()
+                elif speed > 0 and is_kodi_paused:
+                    log.info("Sendspin resumed; resuming Kodi.")
+                    controller.suppress_kodi_player_events()
+                    player.pause()
 
             if not player.isPlaying():
                 log.info("Dummy playback stopped by user/intervention. Exiting loop.")
@@ -132,12 +254,18 @@ async def main_async(controller):
 
 
 if __name__ == "__main__":
+    logger.init_logger()
+
     # Prevent GUI hangs by resolving the directory call immediately
     try:
         handle = int(sys.argv[1])
         xbmcplugin.endOfDirectory(handle, succeeded=True, cacheToDisc=False)
     except (IndexError, ValueError):
         pass
+
+    controller = SendspinServiceController()
+    if handle_plugin_action(controller):
+        sys.exit()
 
     # Multi-instance guard to prevent multiple controllers fighting for ALSA
     win = xbmcgui.Window(10000)
@@ -147,7 +275,6 @@ if __name__ == "__main__":
     win.setProperty(f"{ADDON_ID}.running", "true")
 
     try:
-        controller = SendspinServiceController()
         asyncio.run(main_async(controller))
     except Exception as e:
         xbmc.log(f"[Sendspin] Fatal Startup Error: {e}", xbmc.LOGERROR)

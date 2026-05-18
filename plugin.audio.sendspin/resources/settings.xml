@@ -7,6 +7,7 @@
     <category label="Connection">
         <setting id="server_url" type="text" label="Server WebSocket URL" default="ws://192.168.0.161:8927/sendspin" />
         <setting id="proxy_port" type="number" label="Local proxy port" default="59999" />
+        <setting id="control_url" type="text" label="Container control API URL" default="http://127.0.0.1:59999" />
     </category>
 
     <category label="Client">
