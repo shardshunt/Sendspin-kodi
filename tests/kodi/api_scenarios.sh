@@ -101,6 +101,10 @@ open_plugin_url() {
   jsonrpc "{\"jsonrpc\":\"2.0\",\"method\":\"Player.Open\",\"params\":{\"item\":{\"file\":\"$1\"}},\"id\":3}" >/dev/null
 }
 
+run_plugin_action() {
+  jsonrpc "{\"jsonrpc\":\"2.0\",\"method\":\"Files.GetDirectory\",\"params\":{\"directory\":\"plugin://plugin.audio.sendspin/?action=$1\",\"media\":\"music\"},\"id\":4}" >/dev/null
+}
+
 start_harness() {
   podman pod rm -f "$POD_NAME" >/dev/null 2>&1 || true
   prepare_runtime_tree
@@ -154,7 +158,7 @@ run_state_scenarios() {
 
 run_plugin_command_scenarios() {
   for action in play pause playpause toggle_play_pause next previous; do
-    open_plugin_url "plugin://plugin.audio.sendspin/?action=$action"
+    run_plugin_action "$action"
     sleep 1
   done
 }

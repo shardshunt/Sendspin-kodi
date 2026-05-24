@@ -51,6 +51,8 @@ def handle_plugin_action(controller: SendspinServiceController) -> bool:
     if not action:
         return False
 
+    xbmc.log(f"[Sendspin] Handling plugin action: {action}", xbmc.LOGINFO)
+
     actions = {
         "play": controller.send_play,
         "pause": controller.send_pause,
