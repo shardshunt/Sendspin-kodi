@@ -55,3 +55,6 @@ unfixable = [
   "SIM222", # automatic fix might obscure issue
   "SIM223", # automatic fix might obscure issue
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/kodi/mock_control_api.py" = ["N802"]

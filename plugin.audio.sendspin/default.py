@@ -22,6 +22,13 @@ import logger  # noqa: E402
 from service import SendspinServiceController  # noqa: E402
 
 
+def is_setting_enabled(name: str, default: bool = True) -> bool:
+    value = ADDON.getSetting(name)
+    if value == "":
+        return default
+    return value.lower() == "true"
+
+
 class SendspinKodiPlayer(xbmc.Player):
     def __init__(self, controller: SendspinServiceController):
         super().__init__()
@@ -79,6 +86,28 @@ def get_state_volume(state: dict) -> tuple[int, bool] | None:
         return None
 
 
+def get_instance_guard_window():
+    try:
+        return xbmcgui.Window(10000)
+    except RuntimeError as e:
+        xbmc.log(f"[Sendspin] Multi-instance guard unavailable: {e}", xbmc.LOGWARNING)
+        return None
+
+
+def is_instance_running(win) -> bool:
+    return win is not None and win.getProperty(f"{ADDON_ID}.running") == "true"
+
+
+def set_instance_running(win) -> None:
+    if win is not None:
+        win.setProperty(f"{ADDON_ID}.running", "true")
+
+
+def clear_instance_running(win) -> None:
+    if win is not None:
+        win.clearProperty(f"{ADDON_ID}.running")
+
+
 async def main_async(controller: SendspinServiceController):
     """The async lifecycle with dummy playback kept alive by pre-EOF seeking."""
     log = logger.init_logger()
@@ -119,7 +148,8 @@ async def main_async(controller: SendspinServiceController):
 
             # Clear modal dialogs that block window activation
             xbmc.executebuiltin("Dialog.Close(all, true)")
-            xbmc.executebuiltin("ActivateWindow(visualisation)")
+            if is_setting_enabled("activate_visualisation_enabled"):
+                xbmc.executebuiltin("ActivateWindow(visualisation)")
 
         # Initial Playback
         await start_playback()
@@ -222,8 +252,11 @@ async def main_async(controller: SendspinServiceController):
                     player.pause()
 
             if not player.isPlaying():
-                log.info("Dummy playback stopped by user/intervention. Exiting loop.")
-                break
+                if is_setting_enabled("require_dummy_playback"):
+                    log.info("Dummy playback stopped by user/intervention. Exiting loop.")
+                    break
+                await asyncio.sleep(poll_interval_seconds)
+                continue
 
             try:
                 total_time = player.getTotalTime()
@@ -268,15 +301,17 @@ if __name__ == "__main__":
         sys.exit()
 
     # Multi-instance guard to prevent multiple controllers fighting for ALSA
-    win = xbmcgui.Window(10000)
-    if win.getProperty(f"{ADDON_ID}.running") == "true":
-        sys.exit()
+    win = None
+    if is_setting_enabled("instance_guard_enabled"):
+        win = get_instance_guard_window()
+        if is_instance_running(win):
+            sys.exit()
 
-    win.setProperty(f"{ADDON_ID}.running", "true")
+        set_instance_running(win)
 
     try:
         asyncio.run(main_async(controller))
     except Exception as e:
         xbmc.log(f"[Sendspin] Fatal Startup Error: {e}", xbmc.LOGERROR)
     finally:
-        win.clearProperty(f"{ADDON_ID}.running")
+        clear_instance_running(win)
