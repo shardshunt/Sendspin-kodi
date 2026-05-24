@@ -16,9 +16,13 @@
         <setting id="docker_container_name" type="text" label="Docker container name" default="sendspin-player" />
         <setting id="docker_image_name" type="text" label="Docker image name" default="sendspin-local" />
         <setting id="docker_config_dir" type="text" label="Docker config directory" default="/storage/.config/sendspin" />
+        <setting id="docker_start_enabled" type="bool" label="Start Docker backend" default="true" />
         <setting id="audio_device_override" type="text" label="Audio device ID override (leave empty to auto-detect)" default="" />
-        <setting id="volume_scale" type="number" label="Kodi to Sendspin volume scale" default="0.3" />
+        <setting id="volume_scale" type="text" label="Kodi to Sendspin volume scale" default="0.3" />
         <setting id="fallback_audio_device" type="text" label="Fallback audio device ID" default="8" />
+        <setting id="instance_guard_enabled" type="bool" label="Enable multi-instance guard" default="true" />
+        <setting id="activate_visualisation_enabled" type="bool" label="Activate visualisation window" default="true" />
+        <setting id="require_dummy_playback" type="bool" label="Stop when dummy playback stops" default="true" />
     </category>
 
     <category label="Logging">

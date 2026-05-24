@@ -21,6 +21,7 @@ class SendspinServiceController:
             volume_scale=self._get_volume_scale(addon),
             control_url=control_url,
         )
+        self.docker_start_enabled = addon.getSetting("docker_start_enabled") != "false"
         self.control = SendspinControlClient(control_url)
         self.kodi = KodiManager()
         self.original_kodi_device = None
@@ -172,7 +173,10 @@ class SendspinServiceController:
         if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
             self._switch_to_alternate()
 
-        self.playback_engine.start()
+        if self.docker_start_enabled:
+            self.playback_engine.start()
+        else:
+            self.logger.info("Docker backend startup disabled by addon setting.")
 
     def _switch_to_alternate(self):
         # Try common safe fallbacks
@@ -233,7 +237,10 @@ class SendspinServiceController:
 
     async def cleanup(self) -> None:
         # Stop container and restore audio device[cite: 1, 3, 5]
-        self.playback_engine.stop()
+        if self.docker_start_enabled:
+            self.playback_engine.stop()
+        else:
+            self.logger.info("Docker backend cleanup skipped because startup is disabled.")
         if self.original_kodi_device:
             self.logger.info(f"Restoring audio device to: {self.original_kodi_device}")
             self.kodi.set_audio_output_device(self.original_kodi_device)

@@ -1,0 +1,26 @@
+services:
+  kodi:
+    image: matthuisman/kodi-headless:Omega
+    container_name: sendspin-kodi-test
+    depends_on:
+      - sendspin-control-mock
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      TZ: "${TZ:-Pacific/Auckland}"
+    ports:
+      - "18080:8080"
+      - "19090:9090"
+      - "19777:9777/udp"
+    volumes:
+      - ./.runtime/userdata:/config/.kodi/userdata
+      - ./.runtime/addons/plugin.audio.sendspin:/config/.kodi/addons/plugin.audio.sendspin
+
+  sendspin-control-mock:
+    image: python:3.12-slim
+    container_name: sendspin-control-mock
+    command: ["python", "/app/mock_control_api.py"]
+    volumes:
+      - ./mock_control_api.py:/app/mock_control_api.py:ro
+    ports:
+      - "59999:59999"

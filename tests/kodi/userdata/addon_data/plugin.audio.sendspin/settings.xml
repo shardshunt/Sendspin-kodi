@@ -1,0 +1,11 @@
+<settings version="2">
+    <setting id="control_url">http://sendspin-control-mock:59999</setting>
+    <setting id="docker_start_enabled">false</setting>
+    <setting id="docker_config_dir">/tmp/sendspin-kodi-test</setting>
+    <setting id="audio_device_override">0</setting>
+    <setting id="fallback_audio_device">0</setting>
+    <setting id="volume_scale">0.3</setting>
+    <setting id="instance_guard_enabled">false</setting>
+    <setting id="activate_visualisation_enabled">false</setting>
+    <setting id="require_dummy_playback">false</setting>
+</settings>

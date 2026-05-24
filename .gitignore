@@ -3,6 +3,9 @@ venv/
 .venv/
 env/
 
+#ignore zip files
+*.zip
+
 #ignore workspace
 *.code-workspace
 
