@@ -14,6 +14,14 @@ tests/kodi/smoke.sh
 
 That creates a Podman pod named `sendspin-kodi-test`, starts the mock API and Kodi in that pod, opens `plugin://plugin.audio.sendspin/`, then prints the last Kodi log lines.
 
+For a broader API scenario run:
+
+```bash
+tests/kodi/api_scenarios.sh
+```
+
+That run exercises the documented plugin routes, direct control commands, empty state payloads, full track/playback/volume payloads, paused playback, and legacy scalar volume payloads.
+
 Useful follow-up commands:
 
 ```bash
@@ -52,6 +60,7 @@ If you are working from inside a Distrobox, run the same `tests/kodi/smoke.sh` c
 - Kodi can enable and resolve `plugin.audio.sendspin`.
 - The add-on can call `/state` and `/control` on the configured control API.
 - Kodi logs contain the add-on startup and cleanup messages.
+- `api_scenarios.sh` checks all documented control commands: `play`, `pause`, `toggle_play_pause`, `next`, `previous`, `set_volume`, and `seek`.
 
 ## What It Skips
 

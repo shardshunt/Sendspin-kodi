@@ -61,13 +61,42 @@ wait_for_kodi() {
   return 1
 }
 
+wait_for_mock_api() {
+  for _ in $(seq 1 30); do
+    if curl -fs "http://127.0.0.1:59999/test/events" >/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Mock control API did not become ready at http://127.0.0.1:59999" >&2
+  podman logs --tail=80 "$PODMAN_MOCK_CONTAINER" >&2 || true
+  return 1
+}
+
+curl_retry() {
+  local label="$1"
+  shift
+
+  for _ in $(seq 1 10); do
+    if curl "$@"; then
+      return 0
+    fi
+    echo "Retrying $label..." >&2
+    sleep 1
+  done
+
+  echo "Final attempt for $label failed:" >&2
+  curl "$@"
+}
+
 run_smoke_requests() {
-  curl -fsS "$JSONRPC_URL" \
+  curl_retry "enable addon" -fsS "$JSONRPC_URL" \
     -H "Content-Type: application/json" \
     --data '{"jsonrpc":"2.0","method":"Addons.SetAddonEnabled","params":{"addonid":"plugin.audio.sendspin","enabled":true},"id":2}'
   echo
 
-  curl -fsS "$JSONRPC_URL" \
+  curl_retry "open plugin" -fsS "$JSONRPC_URL" \
     -H "Content-Type: application/json" \
     --data '{"jsonrpc":"2.0","method":"Player.Open","params":{"item":{"file":"plugin://plugin.audio.sendspin/"}},"id":3}'
   echo
@@ -108,6 +137,7 @@ run_with_podman() {
 
   podman pod create \
     --name "$POD_NAME" \
+    -p 59999:59999 \
     -p 18080:8080 \
     -p 19090:9090 \
     -p 19777:9777/udp
@@ -129,6 +159,7 @@ run_with_podman() {
     -v "$RUNTIME_ADDON_DIR:/config/.kodi/addons/plugin.audio.sendspin:Z" \
     matthuisman/kodi-headless:Omega
 
+  wait_for_mock_api
   wait_for_kodi
   run_smoke_requests
   sleep 8
