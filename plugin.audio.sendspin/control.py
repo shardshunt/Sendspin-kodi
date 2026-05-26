@@ -36,6 +36,19 @@ class SendspinControlClient:
     def set_volume(self, volume: int, muted: bool = False) -> bool:
         return self.command("set_volume", volume=max(0, min(100, int(volume))), muted=bool(muted))
 
+    def set_delay(self, delay_ms: float) -> bool:
+        try:
+            value = float(delay_ms)
+        except (TypeError, ValueError):
+            self.logger.warning("Invalid delay_ms value: %s", delay_ms)
+            return False
+
+        if value < 0.0 or value > 5000.0:
+            self.logger.warning("delay_ms out of range: %s", value)
+            return False
+
+        return self.command("set_delay", delay_ms=value)
+
     def seek(self, position: float) -> bool:
         return self.command("seek", position=max(0.0, float(position)))
 

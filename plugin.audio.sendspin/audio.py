@@ -46,10 +46,17 @@ class DockerPlaybackEngine:
             file.write("\n")
         os.replace(tmp_path, path)
 
-    def configure_volume_sync(self, volume, muted):
+    def configure_volume_sync(self, volume, muted, delay_ms: float = 0.0):
         """Seed Sendspin daemon settings from Kodi before the container starts."""
         os.makedirs(self.config_dir, exist_ok=True)
         sendspin_volume = self.kodi_to_sendspin_volume(volume)
+
+        try:
+            delay = float(delay_ms)
+        except (TypeError, ValueError):
+            delay = 0.0
+
+        delay = max(0.0, min(5000.0, delay))
 
         settings_path = os.path.join(self.config_dir, "settings-daemon.json")
         try:
@@ -61,14 +68,16 @@ class DockerPlaybackEngine:
         settings["player_volume"] = sendspin_volume
         settings["player_muted"] = bool(muted)
         settings["use_hardware_volume"] = False
+        settings["delay_ms"] = delay
         settings.pop("hook_set_volume", None)
         self._write_json_file(settings_path, settings)
 
         self.logger.info(
-            "Configured Sendspin volume sync: kodi_volume=%s sendspin_volume=%s muted=%s",
+            "Configured Sendspin daemon settings: kodi_volume=%s sendspin_volume=%s muted=%s delay_ms=%s",
             volume,
             settings["player_volume"],
             settings["player_muted"],
+            settings["delay_ms"],
         )
 
     def _ensure_image_exists(self) -> bool:

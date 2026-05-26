@@ -1,7 +1,9 @@
 import logging
+import os
 import re
 import subprocess
 import time
+import xml.etree.ElementTree as ET
 
 import xbmcaddon
 from audio import DockerPlaybackEngine
@@ -26,6 +28,7 @@ class SendspinServiceController:
         self.kodi = KodiManager()
         self.original_kodi_device = None
         self._suppress_kodi_player_events_until = 0.0
+        self._last_applied_delay_ms = None
 
     def _control_url_from_port(self, addon) -> str:
         port = addon.getSetting("proxy_port") or "59999"
@@ -47,8 +50,56 @@ class SendspinServiceController:
         self.logger.info("Using Kodi to Sendspin volume scale: %s", scale)
         return scale
 
+    def _parse_delay_value(self, value: str) -> float:
+        fallback = 0.0
+        try:
+            delay = float(value)
+        except (TypeError, ValueError):
+            self.logger.warning("Invalid delay_ms setting '%s'; using %s", value, fallback)
+            return fallback
+
+        if delay < 0.0:
+            self.logger.warning("Negative delay_ms setting '%s'; clipping to 0", delay)
+            return 0.0
+        if delay > 5000.0:
+            self.logger.warning("delay_ms setting '%s' above max; clipping to 5000", delay)
+            return 5000.0
+
+        return delay
+
+    def _get_delay_ms(self, addon) -> float:
+        fallback = 0.0
+        setting = addon.getSetting("delay_ms") or str(fallback)
+        return self._parse_delay_value(setting)
+
+    def _get_delay_ms_from_profile(self, path: str) -> float:
+        try:
+            tree = ET.parse(path)
+            root = tree.getroot()
+            for setting in root.findall("setting"):
+                if setting.get("id") == "delay_ms" and setting.text is not None:
+                    return self._parse_delay_value(setting.text.strip())
+        except (ET.ParseError, FileNotFoundError, OSError) as e:
+            self.logger.debug("Could not read addon settings file %s: %s", path, e)
+        return 0.0
+
     def get_sendspin_state(self) -> dict | None:
         return self.control.get_state()
+
+    def get_delay_ms_setting(self) -> float:
+        addon = xbmcaddon.Addon()
+        profile_path = addon.getAddonInfo("profile")
+        if profile_path:
+            settings_path = os.path.join(profile_path, "settings.xml")
+            delay_ms = self._get_delay_ms_from_profile(settings_path)
+            return delay_ms
+        return self._get_delay_ms(addon)
+
+    def set_sendspin_delay(self, delay_ms: float) -> bool:
+        success = self.control.set_delay(delay_ms)
+        if success:
+            self._last_applied_delay_ms = delay_ms
+        return success
 
     def _get_audio_device_id(self, device_string: str) -> str:
         """Maps Kodi strings to ALSA indices by matching both hardware numbers and port labels."""
@@ -154,7 +205,10 @@ class SendspinServiceController:
         self.logger.info(f"Captured original audio device: {self.original_kodi_device}")
 
         kodi_volume = self.kodi.get_volume_state()
-        self.playback_engine.configure_volume_sync(kodi_volume["volume"], kodi_volume["muted"])
+        addon = xbmcaddon.Addon()
+        delay_ms = self._get_delay_ms(addon)
+        self.playback_engine.configure_volume_sync(kodi_volume["volume"], kodi_volume["muted"], delay_ms)
+        self._last_applied_delay_ms = delay_ms
 
         # Extract audio device ID for Docker
         override = xbmcaddon.Addon().getSetting("audio_device_override")
@@ -177,6 +231,8 @@ class SendspinServiceController:
             self.playback_engine.start()
         else:
             self.logger.info("Docker backend startup disabled by addon setting.")
+            if self._last_applied_delay_ms is not None:
+                self.control.set_delay(self._last_applied_delay_ms)
 
     def _switch_to_alternate(self):
         # Try common safe fallbacks

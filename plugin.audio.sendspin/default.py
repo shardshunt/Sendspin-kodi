@@ -199,6 +199,13 @@ async def main_async(controller: SendspinServiceController):
                         f"mapped_sendspin_volume={mapped_volume}"
                     )
 
+                current_delay_ms = await asyncio.get_running_loop().run_in_executor(
+                    None, controller.get_delay_ms_setting
+                )
+                if current_delay_ms != controller._last_applied_delay_ms:
+                    if controller.set_sendspin_delay(current_delay_ms):
+                        log.info("Applied Sendspin delay from Kodi setting: %sms", current_delay_ms)
+
             # --- HANDLER 1: TRACK METADATA ---
             if track_info:
                 title = track_info.get("title")
