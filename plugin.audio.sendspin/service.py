@@ -20,6 +20,8 @@ class SendspinServiceController:
             image_name=addon.getSetting("docker_image_name") or "sendspin-local",
             container_name=addon.getSetting("docker_container_name") or "sendspin-player",
             config_dir=addon.getSetting("docker_config_dir") or "/storage/.config/sendspin",
+            version_control_enabled=addon.getSetting("docker_image_version_control") != "false",
+            image_tag_override=addon.getSetting("docker_image_tag_override") or "",
             volume_scale=self._get_volume_scale(addon),
             control_url=control_url,
         )

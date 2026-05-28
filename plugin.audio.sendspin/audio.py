@@ -7,13 +7,17 @@ import subprocess
 import threading
 from urllib.parse import urlparse
 
+import xbmcaddon
+
 
 class DockerPlaybackEngine:
     def __init__(
         self,
-        image_name="sendspin-local",
+        image_name="ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi",
         container_name="sendspin-player",
         config_dir="/storage/.config/sendspin",
+        version_control_enabled=True,
+        image_tag_override="",
         audio_device="0",
         volume_scale=10 / 30,
         control_url="http://127.0.0.1:59999",
@@ -27,8 +31,34 @@ class DockerPlaybackEngine:
         self.log_process = None
         self.log_thread = None
         self.volume_scale = volume_scale
-        # Path to the directory containing the Dockerfile
-        self.addon_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.version_control_enabled = version_control_enabled
+        self.image_tag_override = image_tag_override
+        self.versioned_image_name = self._get_versioned_image_name()
+
+    def _get_versioned_image_name(self) -> str:
+        """Build image name with tag for version control or custom override."""
+        base_name = self.image_name
+
+        # If a custom tag is provided, use it
+        if self.image_tag_override:
+            if ":" in base_name:
+                # Remove existing tag if present
+                base_name = base_name.split(":")[0]
+            return f"{base_name}:{self.image_tag_override}"
+
+        # If version control is enabled, use addon version as tag
+        if self.version_control_enabled:
+            try:
+                addon = xbmcaddon.Addon()
+                addon_version = addon.getAddonInfo("version")
+                if ":" not in base_name:
+                    return f"{base_name}:{addon_version}"
+                return base_name
+            except Exception as e:
+                self.logger.warning("Could not read addon version; using base image name: %s", e)
+                return base_name
+
+        return base_name
 
     def kodi_to_sendspin_volume(self, volume) -> int:
         return max(0, min(100, round(int(volume) * self.volume_scale)))
@@ -81,36 +111,35 @@ class DockerPlaybackEngine:
         )
 
     def _ensure_image_exists(self) -> bool:
-        """Checks if the docker image exists; if not, attempts to build it."""
-        check_cmd = ["docker", "images", "-q", self.image_name]
+        """Checks if the docker image exists; if not, pulls it from registry."""
+        check_cmd = ["docker", "images", "-q", self.versioned_image_name]
         result = subprocess.run(check_cmd, capture_output=True, text=True)
 
-        if not result.stdout.strip():
-            self.logger.info(f"Image {self.image_name} not found. Attempting to build...")
-            dockerfile_path = os.path.join(self.addon_dir, "plugin.audio.sendspin", "Dockerfile")
+        if result.returncode != 0:
+            self.logger.error("Failed to query Docker images: %s", result.stderr.strip())
+            return False
 
-            if not os.path.exists(dockerfile_path):
-                self.logger.error(f"Cannot build image: Dockerfile not found at {dockerfile_path}")
-                return False
+        if result.stdout.strip():
+            return True
 
-            build_cmd = [
-                "docker",
-                "build",
-                "--no-cache",
-                "--pull",
-                "-t",
-                self.image_name,
-                os.path.join(self.addon_dir, "plugin.audio.sendspin"),
-            ]
-            build_result = subprocess.run(build_cmd, capture_output=True, text=True)
+        self.logger.info("Image %s not found locally. Pulling from registry...", self.versioned_image_name)
+        pull_result = subprocess.run(
+            ["docker", "pull", self.versioned_image_name],
+            capture_output=True,
+            text=True,
+        )
 
-            if build_result.returncode == 0:
-                self.logger.info(f"Successfully built {self.image_name}")
-                return True
-            else:
-                self.logger.error(f"Build failed: {build_result.stderr}")
-                return False
-        return True
+        if pull_result.returncode == 0:
+            self.logger.info("Successfully pulled %s", self.versioned_image_name)
+            # Tag as the base name for container use
+            subprocess.run(
+                ["docker", "tag", self.versioned_image_name, self.image_name],
+                capture_output=True,
+            )
+            return True
+
+        self.logger.error("Failed to pull image %s: %s", self.versioned_image_name, pull_result.stderr.strip())
+        return False
 
     def _stream_logs(self):
         """Background worker to forward Docker logs to Kodi for diagnostics."""
