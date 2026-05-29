@@ -6,6 +6,7 @@ import time
 import xml.etree.ElementTree as ET
 
 import xbmcaddon
+import xbmcvfs
 from audio import DockerPlaybackEngine
 from control import SendspinControlClient
 from kodi import KodiManager
@@ -15,9 +16,24 @@ class SendspinServiceController:
     def __init__(self) -> None:
         self.logger = logging.getLogger("sendspin")
         addon = xbmcaddon.Addon()
+        # Migrate legacy local image name to the GHCR registry image for existing installs
+        try:
+            raw_image_setting = addon.getSetting("docker_image_name") or ""
+            if raw_image_setting.strip().startswith("sendspin-local"):
+                new_image = "ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi"
+                self.logger.info("Migrating saved docker image name '%s' -> '%s'", raw_image_setting, new_image)
+                try:
+                    addon.setSetting("docker_image_name", new_image)
+                except Exception:
+                    # setSetting may not be available in some Kodi runtimes; fall back to using new value
+                    self.logger.debug("Could not persist migrated setting; using migrated value for this run.")
+                # reflect migration into runtime behavior by replacing raw value
+        except Exception:
+            # Non-fatal; continue with existing behavior
+            pass
         control_url = addon.getSetting("control_url") or self._control_url_from_port(addon)
         self.playback_engine = DockerPlaybackEngine(
-            image_name=addon.getSetting("docker_image_name") or "sendspin-local",
+            image_name=addon.getSetting("docker_image_name") or "ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi",
             container_name=addon.getSetting("docker_container_name") or "sendspin-player",
             config_dir=addon.getSetting("docker_config_dir") or "/storage/.config/sendspin",
             version_control_enabled=addon.getSetting("docker_image_version_control") != "false",
@@ -31,6 +47,8 @@ class SendspinServiceController:
         self.original_kodi_device = None
         self._suppress_kodi_player_events_until = 0.0
         self._last_applied_delay_ms = None
+        # Track whether we've already warned about missing per-profile settings
+        self._profile_settings_missing_logged = False
 
     def _control_url_from_port(self, addon) -> str:
         port = addon.getSetting("proxy_port") or "59999"
@@ -82,7 +100,45 @@ class SendspinServiceController:
                 if setting.get("id") == "delay_ms" and setting.text is not None:
                     return self._parse_delay_value(setting.text.strip())
         except (ET.ParseError, FileNotFoundError, OSError) as e:
-            self.logger.debug("Could not read addon settings file %s: %s", path, e)
+            # Avoid log spam: only report the missing profile settings file once per session
+            if not getattr(self, "_profile_settings_missing_logged", False):
+                # Collect diagnostics to help identify why the file isn't readable
+                try:
+                    exists = os.path.exists(path)
+                except Exception:
+                    exists = False
+
+                extra = []
+                if not exists and isinstance(path, str) and path.startswith("special://"):
+                    translated = None
+                    translated_exc = None
+                    try:
+                        translated = xbmcvfs.translatePath(path)
+                    except Exception as te:
+                        translated = None
+                        try:
+                            translated_exc = str(te)
+                        except Exception:
+                            translated_exc = "<unrepresentable>"
+                    if translated:
+                        try:
+                            translated_exists = os.path.exists(translated)
+                        except Exception:
+                            translated_exists = False
+                        extra.append(f"translated={translated} exists={translated_exists}")
+                    if translated_exc:
+                        extra.append(f"translate_exc={translated_exc}")
+
+                if exists:
+                    try:
+                        st = os.stat(path)
+                        extra.append(f"mode={oct(st.st_mode)} uid={st.st_uid} gid={st.st_gid}")
+                    except Exception:
+                        pass
+
+                extra_info = ("; " + ", ".join(extra)) if extra else ""
+                self.logger.info("Could not read addon settings file %s: %s%s", path, e, extra_info)
+                self._profile_settings_missing_logged = True
         return 0.0
 
     def get_sendspin_state(self) -> dict | None:
@@ -92,7 +148,17 @@ class SendspinServiceController:
         addon = xbmcaddon.Addon()
         profile_path = addon.getAddonInfo("profile")
         if profile_path:
-            settings_path = os.path.join(profile_path, "settings.xml")
+            try:
+                real_profile = xbmcvfs.translatePath(profile_path)
+            except Exception:
+                # Log the exception to help diagnose translation failures
+                try:
+                    self.logger.info("xbmcvfs.translatePath(profile) failed; using raw profile: %s", profile_path)
+                except Exception:
+                    pass
+                real_profile = profile_path
+
+            settings_path = os.path.join(real_profile, "settings.xml")
             delay_ms = self._get_delay_ms_from_profile(settings_path)
             return delay_ms
         return self._get_delay_ms(addon)

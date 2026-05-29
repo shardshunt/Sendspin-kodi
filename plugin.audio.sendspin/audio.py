@@ -9,6 +9,11 @@ from urllib.parse import urlparse
 
 import xbmcaddon
 
+try:
+    import xbmcgui
+except Exception:
+    xbmcgui = None
+
 
 class DockerPlaybackEngine:
     def __init__(
@@ -123,23 +128,67 @@ class DockerPlaybackEngine:
             return True
 
         self.logger.info("Image %s not found locally. Pulling from registry...", self.versioned_image_name)
-        pull_result = subprocess.run(
-            ["docker", "pull", self.versioned_image_name],
-            capture_output=True,
-            text=True,
-        )
 
-        if pull_result.returncode == 0:
-            self.logger.info("Successfully pulled %s", self.versioned_image_name)
-            # Tag as the base name for container use
-            subprocess.run(
-                ["docker", "tag", self.versioned_image_name, self.image_name],
-                capture_output=True,
+        # Stream pull output so users can see progress in Kodi and logs
+        try:
+            proc = subprocess.Popen(
+                [
+                    "docker",
+                    "pull",
+                    self.versioned_image_name,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
             )
-            return True
 
-        self.logger.error("Failed to pull image %s: %s", self.versioned_image_name, pull_result.stderr.strip())
-        return False
+            dialog = None
+            if xbmcgui is not None:
+                try:
+                    dialog = xbmcgui.DialogProgress()
+                    dialog.create("Pulling Docker image", f"{self.versioned_image_name}")
+                except Exception:
+                    dialog = None
+
+            percent = 0
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    if line:
+                        self.logger.info("DOCKER-PULL: %s", line.strip())
+                        # Update a simple progress indicator in the dialog if present
+                        if dialog is not None:
+                            try:
+                                percent = min(100, percent + 1)
+                                dialog.update(percent, line.strip())
+                            except Exception:
+                                pass
+
+            ret = proc.wait()
+
+            if dialog is not None:
+                try:
+                    dialog.close()
+                except Exception:
+                    pass
+
+            if ret == 0:
+                self.logger.info("Successfully pulled %s", self.versioned_image_name)
+                # Tag as the base name for container use
+                subprocess.run(
+                    ["docker", "tag", self.versioned_image_name, self.image_name],
+                    capture_output=True,
+                )
+                return True
+            else:
+                self.logger.error("Failed to pull image %s (exit %s)", self.versioned_image_name, ret)
+                return False
+        except FileNotFoundError:
+            self.logger.error("Docker binary not found when attempting to pull %s", self.versioned_image_name)
+            return False
+        except Exception as e:
+            self.logger.error("Unexpected error pulling image %s: %s", self.versioned_image_name, e)
+            return False
 
     def _stream_logs(self):
         """Background worker to forward Docker logs to Kodi for diagnostics."""
@@ -185,7 +234,7 @@ class DockerPlaybackEngine:
             "/dev/snd:/dev/snd",
             "-v",
             f"{self.config_dir}:/root/.config/sendspin",
-            self.image_name,
+            self.versioned_image_name,
             "daemon",
             "--audio-device",
             self.audio_device,
