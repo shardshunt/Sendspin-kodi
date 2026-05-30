@@ -16,21 +16,6 @@ class SendspinServiceController:
     def __init__(self) -> None:
         self.logger = logging.getLogger("sendspin")
         addon = xbmcaddon.Addon()
-        # Migrate legacy local image name to the GHCR registry image for existing installs
-        try:
-            raw_image_setting = addon.getSetting("docker_image_name") or ""
-            if raw_image_setting.strip().startswith("sendspin-local"):
-                new_image = "ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi"
-                self.logger.info("Migrating saved docker image name '%s' -> '%s'", raw_image_setting, new_image)
-                try:
-                    addon.setSetting("docker_image_name", new_image)
-                except Exception:
-                    # setSetting may not be available in some Kodi runtimes; fall back to using new value
-                    self.logger.debug("Could not persist migrated setting; using migrated value for this run.")
-                # reflect migration into runtime behavior by replacing raw value
-        except Exception:
-            # Non-fatal; continue with existing behavior
-            pass
         control_url = addon.getSetting("control_url") or self._control_url_from_port(addon)
         self.playback_engine = DockerPlaybackEngine(
             image_name=addon.getSetting("docker_image_name") or "ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi",
