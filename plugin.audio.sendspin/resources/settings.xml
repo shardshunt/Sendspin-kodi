@@ -8,13 +8,16 @@
         <setting id="server_url" type="text" label="Server WebSocket URL" default="ws://192.168.0.161:8927/sendspin" />
         <setting id="proxy_port" type="number" label="Local proxy port" default="59999" />
         <setting id="control_url" type="text" label="Container control API URL" default="http://127.0.0.1:59999" />
+        <setting id="delay_ms" type="number" label="Static playback delay (ms)" default="0" low="0" high="5000" step="50" />
     </category>
 
     <category label="Client">
         <setting id="client_id" type="text" label="Client ID" default="kodi-sendspin-client" />
         <setting id="client_name_" type="text" label="Client Name" default="Kodi" />
         <setting id="docker_container_name" type="text" label="Docker container name" default="sendspin-player" />
-        <setting id="docker_image_name" type="text" label="Docker image name" default="sendspin-local" />
+        <setting id="docker_image_name" type="text" label="Docker image name" default="ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi" />
+        <setting id="docker_image_version_control" type="bool" label="Use addon version for image tag (enables auto-pull on update)" default="true" />
+        <setting id="docker_image_tag_override" type="text" label="Docker image tag override (leave empty for auto or latest)" default="" />
         <setting id="docker_config_dir" type="text" label="Docker config directory" default="/storage/.config/sendspin" />
         <setting id="docker_start_enabled" type="bool" label="Start Docker backend" default="true" />
         <setting id="audio_device_override" type="text" label="Audio device ID override (leave empty to auto-detect)" default="" />

@@ -72,12 +72,11 @@ def handle_plugin_action(controller: SendspinServiceController) -> bool:
 
 def get_state_volume(state: dict) -> tuple[int, bool] | None:
     volume_payload = state.get("volume")
-    if isinstance(volume_payload, dict):
-        sendspin_volume = volume_payload.get("volume")
-        muted = volume_payload.get("muted", False)
-    else:
-        sendspin_volume = volume_payload
-        muted = False
+    if not isinstance(volume_payload, dict):
+        return None
+
+    sendspin_volume = volume_payload.get("volume")
+    muted = volume_payload.get("muted", False)
 
     if sendspin_volume is None:
         return None
@@ -198,6 +197,13 @@ async def main_async(controller: SendspinServiceController):
                         f"muted={kodi_volume_state['muted']} "
                         f"mapped_sendspin_volume={mapped_volume}"
                     )
+
+                current_delay_ms = await asyncio.get_running_loop().run_in_executor(
+                    None, controller.get_delay_ms_setting
+                )
+                if current_delay_ms != controller._last_applied_delay_ms:
+                    if controller.set_sendspin_delay(current_delay_ms):
+                        log.info("Applied Sendspin delay from Kodi setting: %sms", current_delay_ms)
 
             # --- HANDLER 1: TRACK METADATA ---
             if track_info:

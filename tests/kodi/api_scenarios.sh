@@ -168,6 +168,24 @@ run_direct_control_command_scenarios() {
   mock_post "/control" '{"command":"seek","position":120.5}'
 }
 
+run_delay_setting_scenario() {
+  python3 - <<PY
+import xml.etree.ElementTree as ET
+path = "$RUNTIME_USERDATA_PODMAN_DIR/addon_data/plugin.audio.sendspin/settings.xml"
+tree = ET.parse(path)
+root = tree.getroot()
+for setting in root.findall('setting'):
+    if setting.get('id') == 'delay_ms':
+        setting.text = '250'
+        break
+else:
+    new_setting = ET.SubElement(root, 'setting', {'id': 'delay_ms'})
+    new_setting.text = '250'
+tree.write(path, encoding='utf-8', xml_declaration=False)
+PY
+  sleep 3
+}
+
 assert_events() {
   local events_file="$RUNTIME_DIR/events.json"
   curl_retry "mock GET /test/events" -fsS "$MOCK_URL/test/events" -o "$events_file"
@@ -187,7 +205,7 @@ if state_count < 3:
 
 print(f"Observed control commands: {commands}")
 print(f"Observed /state polls: {state_count}")
-' "$events_file" play pause toggle_play_pause next previous set_volume seek
+' "$events_file" play pause toggle_play_pause next previous set_volume seek set_delay
 }
 
 assert_kodi_logs() {
@@ -220,6 +238,7 @@ start_harness
 run_state_scenarios
 run_plugin_command_scenarios
 run_direct_control_command_scenarios
+run_delay_setting_scenario
 assert_events
 assert_kodi_logs
 show_diagnostics

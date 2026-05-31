@@ -1,5 +1,6 @@
 <settings version="2">
     <setting id="control_url">http://sendspin-control-mock:59999</setting>
+    <setting id="delay_ms">0</setting>
     <setting id="docker_start_enabled">false</setting>
     <setting id="docker_config_dir">/tmp/sendspin-kodi-test</setting>
     <setting id="audio_device_override">0</setting>
