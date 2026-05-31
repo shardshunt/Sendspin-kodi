@@ -18,6 +18,7 @@ from xml.etree import ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 ADDON_DIR = ROOT / "plugin.audio.sendspin"
 ADDON_XML = ADDON_DIR / "addon.xml"
+SETTINGS_XML = ADDON_DIR / "resources" / "settings.xml"
 PYPROJECT = ROOT / "pyproject.toml"
 ASSET_NAME = "plugin.audio.sendspin.zip"
 ZIP_PATH = ROOT / ASSET_NAME
@@ -63,9 +64,32 @@ def pyproject_version() -> str:
     return version
 
 
-def validate_versions() -> tuple[str, str]:
+def docker_image_versions() -> dict[str, str]:
+    try:
+        root = ET.parse(SETTINGS_XML).getroot()
+    except (ET.ParseError, OSError) as exc:
+        raise ReleaseError(f"Could not read {SETTINGS_XML.relative_to(ROOT)}: {exc}") from exc
+
+    versions = {}
+    for setting in root.findall(".//setting"):
+        if setting.attrib.get("id") != "docker_image_version":
+            continue
+
+        version = setting.attrib.get("default", "").strip()
+        if not version:
+            raise ReleaseError("docker_image_version setting is missing a default version")
+        versions[f"{SETTINGS_XML.relative_to(ROOT)} docker_image_version default"] = version
+
+    if not versions:
+        raise ReleaseError(f"{SETTINGS_XML.relative_to(ROOT)} is missing docker_image_version setting")
+
+    return versions
+
+
+def validate_versions() -> tuple[str, str, str]:
     addon_id, addon_version = addon_metadata()
     package_version = pyproject_version()
+    image_versions = docker_image_versions()
 
     if addon_id != ADDON_DIR.name:
         raise ReleaseError(f"addon id {addon_id!r} does not match addon folder {ADDON_DIR.name!r}")
@@ -76,7 +100,13 @@ def validate_versions() -> tuple[str, str]:
             f"{PYPROJECT.relative_to(ROOT)} has {package_version}"
         )
 
-    return addon_id, addon_version
+    distinct_image_versions = set(image_versions.values())
+    if len(distinct_image_versions) > 1:
+        details = ", ".join(f"{source} has {version}" for source, version in image_versions.items())
+        raise ReleaseError(f"Version mismatch: Docker image versions do not align: {details}")
+
+    image_version = next(iter(distinct_image_versions))
+    return addon_id, addon_version, image_version
 
 
 def tag_for(version: str, tag_override: str | None = None) -> str:
@@ -192,7 +222,7 @@ def upload_asset(release: dict, asset_path: Path, token: str) -> None:
 
 
 def publish(tag_override: str | None = None) -> None:
-    addon_id, version = validate_versions()
+    addon_id, version, image_version = validate_versions()
     tag = tag_for(version, tag_override)
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
@@ -205,7 +235,7 @@ def publish(tag_override: str | None = None) -> None:
     zip_path = create_zip()
     release = create_release(owner, repo, tag, version, token)
     upload_asset(release, zip_path, token)
-    print(f"Published {addon_id} {version} as {tag} with asset {ASSET_NAME}")
+    print(f"Published {addon_id} {version} with Docker image {image_version} as {tag} with asset {ASSET_NAME}")
 
 
 def main() -> int:
@@ -222,9 +252,9 @@ def main() -> int:
         if args.publish:
             publish(args.tag)
         else:
-            addon_id, version = validate_versions()
+            addon_id, version, image_version = validate_versions()
             zip_path = create_zip()
-            print(f"Validated {addon_id} {version}")
+            print(f"Validated {addon_id} {version} with Docker image {image_version}")
             print(f"Created {zip_path.relative_to(ROOT)}")
     except ReleaseError as exc:
         print(f"release error: {exc}", file=sys.stderr)

@@ -7,8 +7,6 @@ import subprocess
 import threading
 from urllib.parse import urlparse
 
-import xbmcaddon
-
 try:
     import xbmcgui
 except Exception:
@@ -21,8 +19,7 @@ class DockerPlaybackEngine:
         image_name="ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi",
         container_name="sendspin-player",
         config_dir="/storage/.config/sendspin",
-        version_control_enabled=True,
-        image_tag_override="",
+        image_version="",
         audio_device="0",
         volume_scale=10 / 30,
         control_url="http://127.0.0.1:59999",
@@ -36,34 +33,22 @@ class DockerPlaybackEngine:
         self.log_process = None
         self.log_thread = None
         self.volume_scale = volume_scale
-        self.version_control_enabled = version_control_enabled
-        self.image_tag_override = image_tag_override
+        self.image_version = image_version
         self.versioned_image_name = self._get_versioned_image_name()
 
     def _get_versioned_image_name(self) -> str:
-        """Build image name with tag for version control or custom override."""
+        """Build image name using only the configured Docker image version."""
         base_name = self.image_name
+        image_version = (self.image_version or "").strip()
 
-        # If a custom tag is provided, use it
-        if self.image_tag_override:
-            if ":" in base_name:
-                # Remove existing tag if present
-                base_name = base_name.split(":")[0]
-            return f"{base_name}:{self.image_tag_override}"
+        if not image_version:
+            return base_name
 
-        # If version control is enabled, use addon version as tag
-        if self.version_control_enabled:
-            try:
-                addon = xbmcaddon.Addon()
-                addon_version = addon.getAddonInfo("version")
-                if ":" not in base_name:
-                    return f"{base_name}:{addon_version}"
-                return base_name
-            except Exception as e:
-                self.logger.warning("Could not read addon version; using base image name: %s", e)
-                return base_name
-
-        return base_name
+        slash_index = base_name.rfind("/")
+        tag_index = base_name.rfind(":")
+        if tag_index > slash_index:
+            base_name = base_name[:tag_index]
+        return f"{base_name}:{image_version}"
 
     def kodi_to_sendspin_volume(self, volume) -> int:
         return max(0, min(100, round(int(volume) * self.volume_scale)))
@@ -174,11 +159,6 @@ class DockerPlaybackEngine:
 
             if ret == 0:
                 self.logger.info("Successfully pulled %s", self.versioned_image_name)
-                # Tag as the base name for container use
-                subprocess.run(
-                    ["docker", "tag", self.versioned_image_name, self.image_name],
-                    capture_output=True,
-                )
                 return True
             else:
                 self.logger.error("Failed to pull image %s (exit %s)", self.versioned_image_name, ret)
