@@ -20,7 +20,7 @@ For a broader API scenario run:
 tests/kodi/api_scenarios.sh
 ```
 
-That run exercises the documented plugin routes, direct control commands, empty state payloads, full track/playback/volume payloads, paused playback, and legacy scalar volume payloads.
+That run exercises the documented plugin routes, direct control commands, empty state payloads, full track/playback/volume payloads, and paused playback.
 
 Useful follow-up commands:
 
@@ -48,12 +48,6 @@ docker compose -f tests/kodi/docker-compose.yml logs -f kodi
 docker compose -f tests/kodi/docker-compose.yml down
 ```
 
-## Distrobox
-
-Distrobox is useful for an interactive development shell, but it is not the best runner for this harness. The test needs two long-running service containers with port mappings, so Podman pods are the cleaner fit on Bazzite.
-
-If you are working from inside a Distrobox, run the same `tests/kodi/smoke.sh` command and let it use the host Podman socket/runtime. Do not install Docker just for this harness.
-
 ## What It Covers
 
 - Kodi can boot with this add-on mounted.
@@ -64,4 +58,4 @@ If you are working from inside a Distrobox, run the same `tests/kodi/smoke.sh` c
 
 ## What It Skips
 
-The test settings set `docker_start_enabled=false`, so the add-on does not start the real `sendspin-local` playback container. Use this mode for plugin and Kodi integration debugging. For full host integration, test on the target machine with Docker and `/dev/snd` available.
+The test settings set `docker_start_enabled=false`, so the add-on does not start the real Sendspin playback container. Use this mode for plugin and Kodi integration debugging. For full host integration, test on the target machine with Docker and `/dev/snd` available.

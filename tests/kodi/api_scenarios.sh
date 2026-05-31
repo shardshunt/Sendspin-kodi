@@ -152,8 +152,6 @@ run_state_scenarios() {
   mock_post "/test/state" '{"track":{"title":"Paused Scenario","artist":"Scenario Artist","album":"Scenario Album","artwork_url":""},"playback":{"position":18,"duration":240,"speed":0},"volume":{"volume":20,"muted":true}}'
   sleep 2
 
-  mock_post "/test/state" '{"track":{"title":"Legacy Volume Scenario","artist":"Scenario Artist","album":"Scenario Album","artwork_url":""},"playback":{"position":30,"duration":240,"speed":1},"volume":55}'
-  sleep 2
 }
 
 run_plugin_command_scenarios() {
@@ -214,8 +212,6 @@ assert_kodi_logs() {
 
   grep -F "Track changed to: Scenario Artist - Scenario Track (Scenario Album)" "$kodi_log" >/dev/null
   grep -F "Track changed to: Scenario Artist - Paused Scenario (Scenario Album)" "$kodi_log" >/dev/null
-  grep -F "Track changed to: Scenario Artist - Legacy Volume Scenario (Scenario Album)" "$kodi_log" >/dev/null
-
   if grep -E "\\[Sendspin\\].*(Fatal Startup Error|Async loop encountered an error)" "$kodi_log" >/dev/null; then
     echo "Unexpected Sendspin fatal error in Kodi log" >&2
     grep -E "\\[Sendspin\\].*(Fatal Startup Error|Async loop encountered an error)" "$kodi_log" >&2

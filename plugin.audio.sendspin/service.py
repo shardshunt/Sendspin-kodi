@@ -338,9 +338,6 @@ class SendspinServiceController:
     def send_previous_track(self) -> bool:
         return self.control.previous_track()
 
-    def send_seek(self, position: float) -> bool:
-        return self.control.seek(position)
-
     async def cleanup(self) -> None:
         if self.docker_start_enabled:
             self.playback_engine.stop()
