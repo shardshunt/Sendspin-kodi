@@ -2,44 +2,50 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ADDON_XML="$ROOT_DIR/plugin.audio.sendspin/addon.xml"
+SETTINGS_XML="$ROOT_DIR/plugin.audio.sendspin/resources/settings.xml"
 
-if [ ! -f "$ADDON_XML" ]; then
-  echo "Missing addon.xml at $ADDON_XML" >&2
+if [ ! -f "$SETTINGS_XML" ]; then
+  echo "Missing settings.xml at $SETTINGS_XML" >&2
   exit 1
 fi
 
-IMAGE_NAME="${SENDSPIN_IMAGE_NAME:-ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi}"
-EXTRACTED_VERSION="$(ADDON_XML="$ADDON_XML" python3 - <<'PY'
+read -r DEFAULT_IMAGE_NAME DEFAULT_IMAGE_TAG < <(SETTINGS_XML="$SETTINGS_XML" python3 - <<'PY'
 import os
 import sys
 import xml.etree.ElementTree as ET
-try:
-    tree = ET.parse(os.environ['ADDON_XML'])
-    root = tree.getroot()
-    print(root.attrib.get('version', ''))
-except Exception as exc:
-    print(f'ERROR: {exc}', file=sys.stderr)
-    sys.exit(1)
-PY
-)"
 
-if [ -z "${SENDSPIN_IMAGE_TAG:-}" ]; then
-  IMAGE_TAG="$EXTRACTED_VERSION"
-else
-  IMAGE_TAG="$SENDSPIN_IMAGE_TAG"
+try:
+    tree = ET.parse(os.environ["SETTINGS_XML"])
+    root = tree.getroot()
+except Exception as exc:
+    print(f"ERROR: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+settings = {
+    item.attrib.get("id"): item.attrib.get("default", "")
+    for item in root.findall(".//setting")
+}
+print(f'{settings.get("docker_image_name", "")}\t{settings.get("docker_image_version", "")}')
+PY
+)
+
+IMAGE_NAME="${SENDSPIN_IMAGE_NAME:-$DEFAULT_IMAGE_NAME}"
+IMAGE_TAG="${SENDSPIN_IMAGE_TAG:-$DEFAULT_IMAGE_TAG}"
+
+if [ -z "$IMAGE_NAME" ]; then
+  echo "Failed to determine image name from $SETTINGS_XML" >&2
+  exit 1
 fi
 
 if [ -z "$IMAGE_TAG" ]; then
-  echo "Failed to determine image tag from $ADDON_XML" >&2
+  echo "Failed to determine image tag from $SETTINGS_XML" >&2
   exit 1
 fi
 
 FULL_IMAGE="$IMAGE_NAME:$IMAGE_TAG"
 CONTAINER_NAME="sendspin-image-version-test"
 
-echo "Reading addon metadata from: $ADDON_XML"
-echo "Extracted addon version: $EXTRACTED_VERSION"
+echo "Reading Docker image settings from: $SETTINGS_XML"
 echo "Using Docker image tag: $IMAGE_TAG"
 echo "Testing Docker image pull and start for: $FULL_IMAGE"
 

@@ -47,8 +47,7 @@ Configure the add-on from Kodi settings. Current settings include:
 - `Static playback delay (ms)` – optional timing offset for playback.
 - `Docker container name` – default `sendspin-player`.
 - `Docker image name` – default `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi`.
-- `Use addon version for image tag` – enables auto-pull of the version-tagged image.
-- `Docker image tag override` – override the pulled image tag.
+- `Docker image version` – image tag to pull and run.
 - `Docker config directory` – default `/storage/.config/sendspin`.
 - `Start Docker backend` – disable container startup for API-only or test runs.
 - `Audio device ID override` – force a specific ALSA device index.
@@ -75,8 +74,7 @@ Default control API settings:
 ### Docker and image behavior
 
 - The add-on uses the configured Docker image and container name.
-- By default, it pulls `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi` using the add-on version as the image tag.
-- If `docker_image_tag_override` is set, that tag is used instead.
+- It pulls `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi` using the configured Docker image version as the image tag.
 - The add-on mounts `/dev/snd` into the container and uses host networking.
 - The container stores its runtime configuration under the configured Docker config directory.
 
@@ -94,10 +92,10 @@ The smoke harness uses Podman when available and can also run with Docker Compos
 
 A helper script is available to package and publish the add-on:
 
-- `python scripts/release.py --check` — validate version alignment and build `plugin.audio.sendspin.zip`.
+- `python scripts/release.py --check` — validate plugin version alignment and Docker image version alignment, then build `plugin.audio.sendspin.zip`.
 - `python scripts/release.py --publish` — create a GitHub release and upload the zip asset.
 
-The add-on version is read from both `plugin.audio.sendspin/addon.xml` and `pyproject.toml`, and they must match.
+Plugin versions in `plugin.audio.sendspin/addon.xml` and `pyproject.toml` must match. Docker image versions are validated separately, so they may differ from the plugin version.
 
 ### Documentation
 
