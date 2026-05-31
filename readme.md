@@ -92,7 +92,7 @@ The smoke harness uses Podman when available and can also run with Docker Compos
 
 A helper script is available to package and publish the add-on:
 
-- `python scripts/release.py --check` — validate plugin version alignment and Docker image version alignment, then build `plugin.audio.sendspin.zip`.
+- `python scripts/release.py --check` — validate plugin version alignment and Docker image version alignment, then build `plugin.audio.sendspin.zip`. If `GITHUB_TOKEN` is set, it also checks that the GitHub release tag is unused.
 - `python scripts/release.py --publish` — create a GitHub release and upload the zip asset.
 
 Plugin versions in `plugin.audio.sendspin/addon.xml` and `pyproject.toml` must match. Docker image versions are validated separately, so they may differ from the plugin version.
