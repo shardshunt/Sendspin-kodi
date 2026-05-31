@@ -13,7 +13,6 @@ class KodiManager:
         pass
 
     def get_audio_output_device(self) -> str | None:
-        # Retrieve the current setting via JSON-RPC[cite: 3]
         query = {
             "jsonrpc": "2.0",
             "method": "Settings.GetSettingValue",
@@ -24,7 +23,6 @@ class KodiManager:
         return response.get("result", {}).get("value")
 
     def set_audio_output_device(self, device_name: str) -> bool:
-        # Update the audio setting via JSON-RPC[cite: 3]
         query = {
             "jsonrpc": "2.0",
             "method": "Settings.SetSettingValue",

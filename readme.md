@@ -42,11 +42,9 @@ If the Plugin crashes you may need to correct the audio device in settings.
 
 Configure the add-on from Kodi settings. Current settings include:
 
-- `Server WebSocket URL` – your Sendspin server address.
 - `Local proxy port` – local port for the control API (default `59999`).
 - `Container control API URL` – local control URL (`http://127.0.0.1:59999` by default).
 - `Static playback delay (ms)` – optional timing offset for playback.
-- `Client ID` and `Client Name` – identifiers for this Kodi client.
 - `Docker container name` – default `sendspin-player`.
 - `Docker image name` – default `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi`.
 - `Use addon version for image tag` – enables auto-pull of the version-tagged image.
@@ -59,8 +57,6 @@ Configure the add-on from Kodi settings. Current settings include:
 - `Enable multi-instance guard` – prevent multiple running instances.
 - `Activate visualisation window` – optionally show the visualisation UI.
 - `Stop when dummy playback stops` – whether the add-on shuts down when its dummy playback ends.
-- `Log file path` – location for the add-on's private log file.
-- `Startup error file` – file to record startup failures.
 
 ## Notes on implimentation:
 

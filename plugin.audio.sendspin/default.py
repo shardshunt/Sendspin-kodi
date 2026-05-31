@@ -246,9 +246,6 @@ async def main_async(controller: SendspinServiceController):
                 if abs(current_kodi_pos - position) > 1.0:
                     player.seekTime(position)
 
-                is_kodi_paused = not player.isPlaying()
-
-                # 3. Handle Play/Pause State
                 is_kodi_paused = xbmc.getCondVisibility("Player.Paused")
                 if speed == 0 and not is_kodi_paused:
                     log.info("Sendspin paused; pausing Kodi.")

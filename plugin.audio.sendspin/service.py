@@ -32,7 +32,6 @@ class SendspinServiceController:
         self.original_kodi_device = None
         self._suppress_kodi_player_events_until = 0.0
         self._last_applied_delay_ms = None
-        # Track whether we've already warned about missing per-profile settings
         self._profile_settings_missing_logged = False
 
     def _control_url_from_port(self, addon) -> str:
@@ -253,7 +252,6 @@ class SendspinServiceController:
             return fallback
 
     async def setup(self) -> None:
-        # Capture the current device string[cite: 3, 5]
         self.original_kodi_device = self.kodi.get_audio_output_device()
         self.logger.info(f"Captured original audio device: {self.original_kodi_device}")
 
@@ -276,7 +274,6 @@ class SendspinServiceController:
             self.logger.warning(f"No original Kodi device found; using fallback: {audio_device_id}")
         self.playback_engine.audio_device = audio_device_id
 
-        # If ALSA is active, move Kodi to an alternate to avoid hardware locking[cite: 1, 5]
         if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
             self._switch_to_alternate()
 
@@ -345,7 +342,6 @@ class SendspinServiceController:
         return self.control.seek(position)
 
     async def cleanup(self) -> None:
-        # Stop container and restore audio device[cite: 1, 3, 5]
         if self.docker_start_enabled:
             self.playback_engine.stop()
         else:
