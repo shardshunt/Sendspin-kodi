@@ -1,62 +1,108 @@
 # Sendspin Audio Plugin for Kodi
 
-This is a music provider plugin for Kodi that acts as a client for the Sendspin audio streaming server. It works by launching and managing a lightweight Docker container running [Sendspin-CLI](https://github.com/Sendspin/sendspin-cli) to handle audio playback and synchronisation.
+`plugin.audio.sendspin` is a Kodi music provider add-on that integrates Kodi with a Sendspin playback backend running in Docker.
+
+The add-on launches a local `sendspin-cli` daemon container, exposes a local control API, and synchronises Sendspin playback state, metadata, and volume with Kodi.
 
 ## Disclaimer
 
-This addon is in an ALPHA state. It is experimental and may contain bugs or be unstable. Use it at your own risk.
+This add-on is in an ALPHA state. It is experimental and may contain bugs or be unstable. Use it at your own risk.
 
 This addon was developed with the assistance of AI.
 
-## Usage
+## What it does
 
-Sendspin presents as a music provider, when run it starts a stream and the docker container which can be used as per sendspin cli.
-
-Currently client side control must be done via `docker exec sendspin-player` commands
-
-## How it Works
-
-When activated, the addon:
-
-1. Detects the audio hardware device currently being used by Kodi.
-2. Temporarily shifts Kodi to a fallback audio sink to release the hardware lock.
-3. Launches the Docker container, passing it the exact ALSA hardware index via `/dev/snd`.
-4. Restores Kodi's original audio settings when playback is stopped.
+- Runs as a Kodi audio provider plugin (`plugin.audio.sendspin`).
+- Starts a Docker container to host the Sendspin daemon.
+- Uses a local HTTP control API to keep Kodi and Sendspin in sync.
+- Maps Kodi playback metadata into Kodi's native player UI.
+- Keeps a silent dummy Kodi track playing so ALSA device ownership is retained.
+- Automatically pulls the configured Docker image if it is missing locally.
 
 ## Requirements
 
-- **Docker**: The host system must have Docker installed  and avalible in system `$PATH` (e.g., Docker Addon for LibreELEC).
-
+- `docker` must be installed and available in the host system `$PATH`. (eg with the docker addon for LibreElec)
 
 ## Installation
 
-### 1. Package the Addon
-Create a zip file of the `plugin.audio.sendspin` directory contents.
+1. Dowload the latest plugin.audio.sendspin.zip fron releases.
+2. Open Kodi.
+3. Go to **Settings** → **Add-ons**.
+4. Choose **Install from zip file**.
+5. Select the generated `plugin.audio.sendspin.zip`.
+6. Wait for the installation to complete.
 
-### 2. Install in Kodi
-1. Open Kodi.
-2. Go to **Settings** (the gear icon).
-3. Select **Add-ons**.
-4. Select **Install from zip file**.
-5. Navigate to the location where you saved `plugin.audio.sendspin.zip`.
-6. Select the zip file to install it.
-7. Wait for the "Add-on installed" notification.
+## Usage
+
+Launch the add-on from Kodi like any music provider.
+On the first lauch a dialoge will show the pull status for the docker image. **Note: This can take a long time**
+If the Plugin crashes you may need to correct the audio device in settings.
 
 ## Configuration
 
-The addon can be configured through its settings in Kodi.
+Configure the add-on from Kodi settings. Current settings include:
 
-**Connection & Client:**
-- **Server WebSocket URL**: The address of your main Sendspin server.
-- **Client ID & Name**: Identifiers for this Kodi client on your network.
+- `Server WebSocket URL` – your Sendspin server address.
+- `Local proxy port` – local port for the control API (default `59999`).
+- `Container control API URL` – local control URL (`http://127.0.0.1:59999` by default).
+- `Static playback delay (ms)` – optional timing offset for playback.
+- `Client ID` and `Client Name` – identifiers for this Kodi client.
+- `Docker container name` – default `sendspin-player`.
+- `Docker image name` – default `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi`.
+- `Use addon version for image tag` – enables auto-pull of the version-tagged image.
+- `Docker image tag override` – override the pulled image tag.
+- `Docker config directory` – default `/storage/.config/sendspin`.
+- `Start Docker backend` – disable container startup for API-only or test runs.
+- `Audio device ID override` – force a specific ALSA device index.
+- `Kodi to Sendspin volume scale` – scale factor for volume mapping.
+- `Fallback audio device ID` – used when device detection cannot resolve the current output.
+- `Enable multi-instance guard` – prevent multiple running instances.
+- `Activate visualisation window` – optionally show the visualisation UI.
+- `Stop when dummy playback stops` – whether the add-on shuts down when its dummy playback ends.
+- `Log file path` – location for the add-on's private log file.
+- `Startup error file` – file to record startup failures.
 
-**Docker & Audio Settings:**
-- **Docker container name**: Name for the spawned container (default: `sendspin-player`).
-- **Docker image name**: The image to run (default: `sendspin-local`).
-- **Docker config directory**: The mapped path for container settings (default: `/storage/.config/sendspin`).
-- **Audio device ID override**: Force the container to use a specific ALSA index (leave empty to auto-detect).
-- **Fallback audio device ID**: The ALSA index to use if Kodi is currently using PulseAudio (e.g., Bluetooth) and hardware auto-detection fails.
+## Notes on implimentation:
 
-**Logging:**
-- **Log file path**: The location to store the addon's log file. Container logs are streamed directly into Kodi's main log.
-- **Startup error file**: A file to log any critical errors that happen when the service first starts.
+The add-on supports both internal Kodi actions and the Sendspin control API.
+
+### Local control API
+
+The container is configured to expose a local HTTP control API. See `SENDSPIN_CONTROL_API.md` for the exact API contract.
+
+Default control API settings:
+
+- `http://127.0.0.1:59999`
+- `POST /control` for playback commands
+- `GET /state` for current track/playback/volume state
+
+### Docker and image behavior
+
+- The add-on uses the configured Docker image and container name.
+- By default, it pulls `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi` using the add-on version as the image tag.
+- If `docker_image_tag_override` is set, that tag is used instead.
+- The add-on mounts `/dev/snd` into the container and uses host networking.
+- The container stores its runtime configuration under the configured Docker config directory.
+
+### Tests
+
+The repository includes Kodi smoke tests and API scenario coverage:
+
+- `tests/kodi/smoke.sh` — container-based Kodi smoke test harness.
+- `tests/kodi/api_scenarios.sh` — exercises the documented control API and plugin routes.
+- `tests/docker_image_pull_start_test.sh` — validates Docker image pull and container start behavior.
+
+The smoke harness uses Podman when available and can also run with Docker Compose.
+
+### Release and packaging
+
+A helper script is available to package and publish the add-on:
+
+- `python scripts/release.py --check` — validate version alignment and build `plugin.audio.sendspin.zip`.
+- `python scripts/release.py --publish` — create a GitHub release and upload the zip asset.
+
+The add-on version is read from both `plugin.audio.sendspin/addon.xml` and `pyproject.toml`, and they must match.
+
+### Documentation
+
+See `SENDSPIN_CONTROL_API.md` for the local control API contract and example curl commands.
