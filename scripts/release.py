@@ -202,6 +202,31 @@ def run_checks(
     all_passed = True
     owner, repo = None, None
 
+    # 0. Git Integrity (Cleanliness and Branch Sync)
+    git_errors: list[str] = []
+    try:
+        if run_git(["status", "--porcelain"]):
+            git_errors.append("Uncommitted changes")
+        branch = run_git(["rev-parse", "--abbrev-ref", "HEAD"])
+        if branch != "main":
+            git_errors.append(f"Branch is {branch!r} (expected 'main')")
+
+        subprocess.run(["git", "fetch", "origin", "main"], cwd=ROOT, capture_output=True, check=False)
+        local_sha = run_git(["rev-parse", "HEAD"])
+        try:
+            remote_sha = run_git(["rev-parse", "origin/main"])
+            if local_sha != remote_sha:
+                git_errors.append("Not in sync with origin/main")
+        except ReleaseError:
+            git_errors.append("origin/main not found")
+    except ReleaseError as exc:
+        git_errors.append(str(exc))
+
+    git_ok = not git_errors
+    print_status("Git Integrity", git_ok, "; ".join(git_errors) if git_errors else "")
+    if not git_ok:
+        all_passed = False
+
     # 1. Metadata Validation (addon.xml, pyproject.toml, settings.xml)
     addon_id, version, image_version, local_errors = validate_versions()
     metadata_ok = not local_errors
