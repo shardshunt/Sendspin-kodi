@@ -238,7 +238,17 @@ else:
     new_setting.text = '250'
 tree.write(path, encoding='utf-8', xml_declaration=False)
 PY
-  sleep 3
+
+  for _ in $(seq 1 15); do
+    if curl_retry "mock GET /test/events" -fsS "$MOCK_URL/test/events" | \
+      python3 -c 'import json,sys;events=json.load(sys.stdin)["events"];print("set_delay" in [e["payload"].get("command") for e in events if e["type"]=="control"])' | grep -q True; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Timed out waiting for set_delay after updating delay_ms setting." >&2
+  return 1
 }
 
 assert_events() {
