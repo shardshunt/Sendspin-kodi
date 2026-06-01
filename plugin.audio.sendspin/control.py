@@ -85,6 +85,9 @@ class SendspinControlClient:
                 self._logged_unavailable = False
                 payload = response.read().decode("utf-8")
                 return json.loads(payload)
+        except urllib.error.HTTPError as e:
+            self.logger.warning("Sendspin state request failed: status=%s", e.code)
+            return None
         except (json.JSONDecodeError, urllib.error.URLError, TimeoutError, OSError) as e:
             if not self._logged_unavailable:
                 self._logged_unavailable = True
@@ -113,6 +116,17 @@ class SendspinControlClient:
                     return json.loads(body)
                 self.logger.warning("Sendspin control command failed: status=%s payload=%s", response.status, payload)
                 return None
+        except urllib.error.HTTPError as e:
+            if e.code == 400:
+                self.logger.warning(
+                    "Sendspin control API returned 400 Bad Request at %s%s: command might be unsupported. "
+                    "Please ensure the Docker container version matches the add-on version.",
+                    self.base_url,
+                    path,
+                )
+            else:
+                self.logger.warning("Sendspin control command failed: status=%s payload=%s", e.code, payload)
+            return None
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             if not self._logged_unavailable:
                 self._logged_unavailable = True

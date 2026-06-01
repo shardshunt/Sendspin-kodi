@@ -34,6 +34,19 @@ class SendspinServiceController:
         self._profile_settings_missing_logged = False
         self._audio_claimed = False
 
+        # Check for version mismatch due to stale persisted settings
+        addon_version = addon.getAddonInfo("version")
+        image_version = addon.getSetting("docker_image_version")
+        if image_version and image_version != addon_version:
+            self.logger.warning(
+                "Version mismatch detected! Add-on version is '%s' but configured Docker image version is '%s'. "
+                "This is likely due to stale persisted settings. Please go to Add-on settings and choose 'Reset to defaults', "
+                "or manually update the Docker image version to '%s' to prevent command errors.",
+                addon_version,
+                image_version,
+                addon_version,
+            )
+
     def _control_url_from_port(self, addon) -> str:
         port = addon.getSetting("proxy_port") or "59999"
         return f"http://127.0.0.1:{port}"
