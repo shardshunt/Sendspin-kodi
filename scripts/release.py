@@ -195,25 +195,65 @@ def release_exists(owner: str, repo: str, tag: str, token: str) -> bool:
     raise ReleaseError(f"Could not check release {tag}: HTTP {status} {body.decode('utf-8', errors='replace')}")
 
 
-def validate_release_tag_available(
-    version: str,
-    tag_override: str | None = None,
-    *,
-    require_token: bool = True,
-    token_override: str | None = None,
-) -> tuple[str | None, str | None, str]:
-    tag = tag_for(version, tag_override)
+def run_checks(
+    tag_override: str | None = None, token_override: str | None = None
+) -> tuple[bool, Path | None, str, str, str | None, str | None]:
+    """Runs all validation checks without early exit. Returns (overall_success, zip_path, version, tag, owner, repo)."""
+    all_passed = True
+    owner, repo = None, None
+
+    # 1. Metadata Validation (addon.xml, pyproject.toml, settings.xml)
+    addon_id, version, image_version, local_errors = validate_versions()
+    metadata_ok = not local_errors
+    print_status("Metadata Validation", metadata_ok, f"{addon_id} {version}" if metadata_ok else "")
+    for e in local_errors:
+        print_status("  > Error", False, e)
+    if not metadata_ok:
+        all_passed = False
+
+    # 2. Remote Checks (GitHub Release Tag and Docker Registry)
     token = token_override or os.environ.get("GITHUB_TOKEN")
+    tag = tag_for(version, tag_override)
+
     if not token:
-        if require_token:
-            raise ReleaseError("GITHUB_TOKEN is required to check whether the release tag already exists")
-        return None, None, tag
+        print_status("GitHub Release Check", True, f"Skipped (no token, tag {tag})")
+        print_status("Docker Image Check", True, "Skipped (no token)")
+    else:
+        try:
+            owner, repo = repository()
+            if release_exists(owner, repo, tag, token):
+                print_status("GitHub Release Check", False, f"{tag} already exists in {owner}/{repo}")
+                all_passed = False
+            else:
+                print_status("GitHub Release Check", True, f"{tag} available")
 
-    owner, repo = repository()
-    if release_exists(owner, repo, tag, token):
-        raise ReleaseError(f"Release {tag} already exists in {owner}/{repo}")
+            if image_version != "unknown":
+                exists, detail = check_docker_image_exists(owner, image_version, token)
+                if exists:
+                    print_status("Docker Image Check", True, f"{image_version} found")
+                else:
+                    print_status("Docker Image Check", False, detail)
+                    all_passed = False
+        except ReleaseError as exc:
+            print_status("GitHub/Docker API", False, str(exc))
+            all_passed = False
 
-    return owner, repo, tag
+    # 3. Build and Layout Validation
+    zip_path = None
+    try:
+        zip_path = create_zip()
+        print_status("Zip Creation", True, zip_path.name)
+        zip_errors = verify_zip_layout(zip_path, addon_id, version)
+        if zip_errors:
+            print_status("Zip Layout Check", False, ", ".join(zip_errors))
+            all_passed = False
+        else:
+            print_status("Zip Layout Check", True, "Valid")
+    except Exception as exc:
+        print_status("Zip Creation/Check", False, str(exc))
+        all_passed = False
+
+    return all_passed, zip_path, version, tag, owner, repo
 
 
 def check_docker_image_exists(owner: str, version: str, token: str) -> tuple[bool, str]:
@@ -263,6 +303,32 @@ def create_zip() -> Path:
     return ZIP_PATH
 
 
+def verify_zip_layout(zip_path: Path, addon_id: str, version: str) -> list[str]:
+    """Verify the zip contains the expected Kodi folder structure and metadata."""
+    errors: list[str] = []
+    try:
+        with zipfile.ZipFile(zip_path, "r") as archive:
+            namelist = archive.namelist()
+            addon_xml_in_zip = f"{addon_id}/addon.xml"
+
+            if addon_xml_in_zip not in namelist:
+                errors.append(f"missing {addon_xml_in_zip}")
+            else:
+                with archive.open(addon_xml_in_zip) as f:
+                    root = ET.parse(f).getroot()
+                    if root.attrib.get("id") != addon_id:
+                        errors.append(f"id in zip is {root.attrib.get('id')!r}")
+                    if root.attrib.get("version") != version:
+                        errors.append(f"version in zip is {root.attrib.get('version')!r}")
+
+            forbidden = [n for n in namelist if "__pycache__" in n or n.endswith((".pyc", ".pyo"))]
+            if forbidden:
+                errors.append(f"contains forbidden files: {forbidden[:3]!r}")
+    except Exception as exc:
+        errors.append(f"failed to read zip: {exc}")
+    return errors
+
+
 def create_release(owner: str, repo: str, tag: str, version: str, token: str) -> dict:
     payload = {
         "tag_name": tag,
@@ -302,40 +368,20 @@ def upload_asset(release: dict, asset_path: Path, token: str) -> None:
 
 
 def publish(tag_override: str | None = None, token_override: str | None = None) -> None:
-    addon_id, version, image_version, errors = validate_versions()
-
-    if not errors:
-        print(f"Validated {addon_id} {version} with Docker image {image_version}")
-
     token = token_override or os.environ.get("GITHUB_TOKEN")
-
-    owner: str | None = None
-    repo: str | None = None
-    tag = tag_for(version, tag_override)
-
     if not token:
-        errors.append("GITHUB_TOKEN is required to publish a release")
-    else:
-        try:
-            owner, repo, tag = validate_release_tag_available(version, tag_override, token_override=token)
-            if owner and image_version != "unknown":
-                if not check_docker_image_exists(owner, image_version, token):
-                    errors.append(
-                        f"Docker image ghcr.io/{owner}/{DOCKER_PACKAGE_NAME}:{image_version} not found on GHCR"
-                    )
-        except ReleaseError as exc:
-            errors.append(str(exc))
+        run_checks(tag_override, token_override)
+        print_status("Status", False, "GITHUB_TOKEN is required to publish")
+        sys.exit(1)
 
-    if errors:
-        raise ReleaseError("\n" + "\n".join(f"  - {e}" for e in errors))
+    success, zip_path, version, tag, owner, repo = run_checks(tag_override, token_override)
+    if not success:
+        sys.exit(1)
 
-    # At this point, token, owner, and repo are guaranteed to be set if errors is empty
-    assert token and owner and repo
-
-    zip_path = create_zip()
+    assert zip_path and owner and repo
     release = create_release(owner, repo, tag, version, token)
     upload_asset(release, zip_path, token)
-    print(f"Published {addon_id} {version} with Docker image {image_version} as {tag} with asset {ASSET_NAME}")
+    print_status("Status", True, f"Published as {tag}")
 
 
 def main() -> int:
@@ -357,54 +403,12 @@ def main() -> int:
         if args.publish:
             publish(args.tag, args.token)
         else:
-            addon_id, version, image_version, local_errors = validate_versions()
-            metadata_ok = not local_errors
-
-            print_status("Metadata Validation", metadata_ok, f"{addon_id} {version}" if metadata_ok else "")
-            if not metadata_ok:
-                for e in local_errors:
-                    print_status("  > Error", False, e)
-
-            token = args.token or os.environ.get("GITHUB_TOKEN")
-            tag = tag_for(version, args.tag)
-            remote_ok = True
-
-            if token:
-                try:
-                    owner, repo = repository()
-                    if release_exists(owner, repo, tag, token):
-                        print_status("GitHub Release Check", False, f"{tag} already exists")
-                        remote_ok = False
-                    else:
-                        print_status("GitHub Release Check", True, f"{tag} available")
-
-                    if image_version != "unknown":
-                        exists, detail = check_docker_image_exists(owner, image_version, token)
-                        if exists:
-                            print_status("Docker Image Check", True, f"{image_version} found")
-                        else:
-                            print_status("Docker Image Check", False, detail)
-                            remote_ok = False
-                except ReleaseError as exc:
-                    print_status("GitHub/Docker API", False, str(exc))
-                    remote_ok = False
-            else:
-                print_status("GitHub Release Check", True, f"Skipped (no token, tag {tag})")
-                print_status("Docker Image Check", True, "Skipped (no token)")
-
-            if metadata_ok and remote_ok:
-                zip_path = create_zip()
-                print_status("Zip Creation", True, zip_path.name)
-
-            if not (metadata_ok and remote_ok):
+            success, _, _, _, _, _ = run_checks(args.tag, args.token)
+            if not success:
                 return 1
-
     except ReleaseError as exc:
-        # Only print unexpected errors that weren't already caught by the test output
-        if not str(exc).startswith("\n"):
-            print_status("Unexpected Error", False, str(exc))
+        print_status("Unexpected Error", False, str(exc))
         return 1
-
     return 0
 
 
