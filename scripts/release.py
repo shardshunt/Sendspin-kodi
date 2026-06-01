@@ -86,27 +86,42 @@ def docker_image_versions() -> dict[str, str]:
     return versions
 
 
-def validate_versions() -> tuple[str, str, str]:
-    addon_id, addon_version = addon_metadata()
-    package_version = pyproject_version()
-    image_versions = docker_image_versions()
+def validate_versions() -> tuple[str, str, str, list[str]]:
+    errors: list[str] = []
+    addon_id, addon_version = "unknown", "unknown"
+    package_version, image_version = "unknown", "unknown"
 
-    if addon_id != ADDON_DIR.name:
-        raise ReleaseError(f"addon id {addon_id!r} does not match addon folder {ADDON_DIR.name!r}")
-    if addon_version != package_version:
-        raise ReleaseError(
-            "Version mismatch: "
-            f"{ADDON_XML.relative_to(ROOT)} has {addon_version}, "
-            f"{PYPROJECT.relative_to(ROOT)} has {package_version}"
-        )
+    try:
+        addon_id, addon_version = addon_metadata()
+        if addon_id != ADDON_DIR.name:
+            errors.append(f"addon id {addon_id!r} does not match addon folder {ADDON_DIR.name!r}")
+    except ReleaseError as exc:
+        errors.append(str(exc))
 
-    distinct_image_versions = set(image_versions.values())
-    if len(distinct_image_versions) > 1:
-        details = ", ".join(f"{source} has {version}" for source, version in image_versions.items())
-        raise ReleaseError(f"Version mismatch: Docker image versions do not align: {details}")
+    try:
+        package_version = pyproject_version()
+    except ReleaseError as exc:
+        errors.append(str(exc))
 
-    image_version = next(iter(distinct_image_versions))
-    return addon_id, addon_version, image_version
+    try:
+        image_versions = docker_image_versions()
+        distinct_versions = set(image_versions.values())
+        if len(distinct_versions) > 1:
+            details = ", ".join(f"{source} has {version}" for source, version in image_versions.items())
+            errors.append(f"Version mismatch: Docker image versions do not align: {details}")
+        if distinct_versions:
+            image_version = next(iter(distinct_versions))
+    except ReleaseError as exc:
+        errors.append(str(exc))
+
+    if addon_version != "unknown" and package_version != "unknown":
+        if addon_version != package_version:
+            errors.append(
+                f"Version mismatch: {ADDON_XML.relative_to(ROOT)} has {addon_version}, "
+                f"{PYPROJECT.relative_to(ROOT)} has {package_version}"
+            )
+
+    return addon_id, addon_version, image_version, errors
 
 
 def tag_for(version: str, tag_override: str | None = None) -> str:
@@ -173,9 +188,10 @@ def validate_release_tag_available(
     tag_override: str | None = None,
     *,
     require_token: bool = True,
+    token_override: str | None = None,
 ) -> tuple[str | None, str | None, str]:
     tag = tag_for(version, tag_override)
-    token = os.environ.get("GITHUB_TOKEN")
+    token = token_override or os.environ.get("GITHUB_TOKEN")
     if not token:
         if require_token:
             raise ReleaseError("GITHUB_TOKEN is required to check whether the release tag already exists")
@@ -241,13 +257,31 @@ def upload_asset(release: dict, asset_path: Path, token: str) -> None:
         )
 
 
-def publish(tag_override: str | None = None) -> None:
-    addon_id, version, image_version = validate_versions()
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        raise ReleaseError("GITHUB_TOKEN is required to publish a release")
+def publish(tag_override: str | None = None, token_override: str | None = None) -> None:
+    addon_id, version, image_version, errors = validate_versions()
 
-    owner, repo, tag = validate_release_tag_available(version, tag_override)
+    if not errors:
+        print(f"Validated {addon_id} {version} with Docker image {image_version}")
+
+    token = token_override or os.environ.get("GITHUB_TOKEN")
+
+    owner: str | None = None
+    repo: str | None = None
+    tag = tag_for(version, tag_override)
+
+    if not token:
+        errors.append("GITHUB_TOKEN is required to publish a release")
+    else:
+        try:
+            owner, repo, tag = validate_release_tag_available(version, tag_override, token_override=token)
+        except ReleaseError as exc:
+            errors.append(str(exc))
+
+    if errors:
+        raise ReleaseError("\n" + "\n".join(f"  - {e}" for e in errors))
+
+    # At this point, token, owner, and repo are guaranteed to be set if errors is empty
+    assert token and owner and repo
 
     zip_path = create_zip()
     release = create_release(owner, repo, tag, version, token)
@@ -264,6 +298,7 @@ def main() -> int:
     )
     parser.add_argument("--publish", action="store_true", help="create the GitHub release and upload the release zip")
     parser.add_argument("--tag", help="override the release tag; defaults to v<version>")
+    parser.add_argument("--token", help="GitHub API token (overrides GITHUB_TOKEN env var)")
     args = parser.parse_args()
 
     if args.check == args.publish:
@@ -271,20 +306,30 @@ def main() -> int:
 
     try:
         if args.publish:
-            publish(args.tag)
+            publish(args.tag, args.token)
         else:
-            addon_id, version, image_version = validate_versions()
-            owner, repo, tag = validate_release_tag_available(version, args.tag, require_token=False)
+            addon_id, version, image_version, errors = validate_versions()
+
+            if not errors:
+                print(f"Validated {addon_id} {version} with Docker image {image_version}")
+
+            try:
+                owner, repo, tag = validate_release_tag_available(
+                    version, args.tag, require_token=False, token_override=args.token
+                )
+            except ReleaseError as exc:
+                errors.append(str(exc))
+                tag = tag_for(version, args.tag)
+                owner, repo = None, None
+
+            if errors:
+                raise ReleaseError("\n" + "\n".join(f"  - {e}" for e in errors))
+
             zip_path = create_zip()
             if owner and repo:
-                print(
-                    f"Validated {addon_id} {version} with Docker image {image_version}; release tag {tag} is available"
-                )
+                print(f"Release tag {tag} is available")
             else:
-                print(
-                    f"Validated {addon_id} {version} with Docker image {image_version}; "
-                    f"skipped remote release tag check for {tag} because GITHUB_TOKEN is not set"
-                )
+                print(f"Skipped remote release tag check for {tag} because GITHUB_TOKEN is not set")
             print(f"Created {zip_path.relative_to(ROOT)}")
     except ReleaseError as exc:
         print(f"release error: {exc}", file=sys.stderr)
