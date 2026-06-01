@@ -447,7 +447,7 @@ def upload_asset(release: dict, asset_path: Path, token: str) -> None:
         )
 
 
-def publish(tag_override: str | None = None, token_override: str | None = None) -> None:
+def publish(tag_override: str | None = None, token_override: str | None = None, force: bool = False) -> None:
     token = token_override or os.environ.get("GITHUB_TOKEN")
     if not token:
         run_checks(tag_override, token_override)
@@ -455,10 +455,15 @@ def publish(tag_override: str | None = None, token_override: str | None = None) 
         sys.exit(1)
 
     success, zip_path, version, tag, owner, repo = run_checks(tag_override, token_override)
-    if not success:
+    if not success and not force:
         sys.exit(1)
 
-    assert zip_path and owner and repo
+    if not success:
+        print_status("Force Mode", True, "Proceeding with publish despite validation failures")
+
+    if not (zip_path and owner and repo):
+        raise ReleaseError("Cannot force publish: missing critical repository or zip information")
+
     release = create_release(owner, repo, tag, version, token)
     upload_asset(release, zip_path, token)
     print_status("Status", True, f"Published as {tag}")
@@ -474,6 +479,7 @@ def main() -> int:
     parser.add_argument("--publish", action="store_true", help="create the GitHub release and upload the release zip")
     parser.add_argument("--tag", help="override the release tag; defaults to v<version>")
     parser.add_argument("--token", help="GitHub API token (overrides GITHUB_TOKEN env var)")
+    parser.add_argument("--force", action="store_true", help="force publish even if validation checks fail")
     args = parser.parse_args()
 
     if args.check == args.publish:
@@ -481,10 +487,10 @@ def main() -> int:
 
     try:
         if args.publish:
-            publish(args.tag, args.token)
+            publish(args.tag, args.token, args.force)
         else:
             success, _, _, _, _, _ = run_checks(args.tag, args.token)
-            if not success:
+            if not success and not args.force:
                 return 1
     except ReleaseError as exc:
         print_status("Unexpected Error", False, str(exc))
