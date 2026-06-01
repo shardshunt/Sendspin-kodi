@@ -18,6 +18,11 @@ class SendspinControlClient:
         payload.update(params)
         return self._post("/control", payload)
 
+    def command_response(self, name: str, **params) -> dict | None:
+        payload = {"command": name}
+        payload.update(params)
+        return self._post_json("/control", payload)
+
     def play(self) -> bool:
         return self.command("play")
 
@@ -32,6 +37,19 @@ class SendspinControlClient:
 
     def previous_track(self) -> bool:
         return self.command("previous")
+
+    def release_audio(self) -> bool:
+        return self.command("release_audio")
+
+    def acquire_audio(self) -> bool:
+        return self.command("acquire_audio")
+
+    def audio_status(self) -> dict | None:
+        response = self.command_response("audio_status")
+        if not isinstance(response, dict):
+            return None
+        audio = response.get("audio")
+        return audio if isinstance(audio, dict) else None
 
     def set_volume(self, volume: int, muted: bool = False) -> bool:
         return self.command("set_volume", volume=max(0, min(100, int(volume))), muted=bool(muted))
@@ -74,6 +92,9 @@ class SendspinControlClient:
             return None
 
     def _post(self, path: str, payload: dict) -> bool:
+        return self._post_json(path, payload) is not None
+
+    def _post_json(self, path: str, payload: dict) -> dict | None:
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}{path}",
@@ -86,11 +107,17 @@ class SendspinControlClient:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 if 200 <= response.status < 300:
                     self._logged_unavailable = False
-                    return True
+                    body = response.read().decode("utf-8")
+                    if not body:
+                        return {}
+                    return json.loads(body)
                 self.logger.warning("Sendspin control command failed: status=%s payload=%s", response.status, payload)
-                return False
+                return None
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             if not self._logged_unavailable:
                 self._logged_unavailable = True
                 self.logger.warning("Sendspin control API unavailable at %s: %s", self.base_url, e)
-            return False
+            return None
+        except json.JSONDecodeError as e:
+            self.logger.warning("Sendspin control response was not valid JSON: %s", e)
+            return None

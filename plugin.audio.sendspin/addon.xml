@@ -6,6 +6,7 @@
   <extension point="xbmc.python.pluginsource" library="default.py">
     <provides>audio</provides>
   </extension>
+  <extension point="xbmc.service" library="service_entry.py" start="login"/>
   <extension point="xbmc.addon.metadata">
     <summary lang="en_GB">Sendspin Audio App</summary>
     <description lang="en_GB">Interface app to manage Sendspin Docker playback with native Kodi player controls.</description>

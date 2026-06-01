@@ -32,6 +32,7 @@ class SendspinServiceController:
         self._suppress_kodi_player_events_until = 0.0
         self._last_applied_delay_ms = None
         self._profile_settings_missing_logged = False
+        self._audio_claimed = False
 
     def _control_url_from_port(self, addon) -> str:
         port = addon.getSetting("proxy_port") or "59999"
@@ -151,6 +152,20 @@ class SendspinServiceController:
         if success:
             self._last_applied_delay_ms = delay_ms
         return success
+
+    def get_sendspin_audio_status(self) -> dict | None:
+        return self.control.audio_status()
+
+    def is_sendspin_audio_released(self, state: dict | None = None) -> bool:
+        if isinstance(state, dict):
+            audio = state.get("audio")
+            if isinstance(audio, dict):
+                return bool(audio.get("released", False))
+
+        status = self.get_sendspin_audio_status()
+        if isinstance(status, dict):
+            return bool(status.get("released", False))
+        return False
 
     def _get_audio_device_id(self, device_string: str) -> str:
         """Maps Kodi strings to ALSA indices by matching both hardware numbers and port labels."""
@@ -273,7 +288,7 @@ class SendspinServiceController:
             self.logger.warning(f"No original Kodi device found; using fallback: {audio_device_id}")
         self.playback_engine.audio_device = audio_device_id
 
-        if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
+        if self.docker_start_enabled and self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
             self._switch_to_alternate()
 
         if self.docker_start_enabled:
@@ -283,6 +298,12 @@ class SendspinServiceController:
             if self._last_applied_delay_ms is not None:
                 self.control.set_delay(self._last_applied_delay_ms)
 
+        if self.wait_for_control_api():
+            if self.release_sendspin_audio():
+                self.restore_kodi_audio_device()
+        else:
+            self.logger.warning("Sendspin control API did not become available during setup.")
+
     def _switch_to_alternate(self):
         # Try common safe fallbacks
         candidates = ["ALSA:default", "ALSA:sysdefault", "PULSE:default"]
@@ -291,6 +312,48 @@ class SendspinServiceController:
                 if self.kodi.set_audio_output_device(candidate):
                     self.logger.info(f"Switched Kodi audio to {candidate} to free hardware.")
                     break
+
+    def wait_for_control_api(self, timeout_seconds: float = 20.0, interval_seconds: float = 0.5) -> bool:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if self.control.audio_status() is not None or self.control.get_state() is not None:
+                return True
+            time.sleep(interval_seconds)
+        return False
+
+    def restore_kodi_audio_device(self) -> bool:
+        if not self.original_kodi_device:
+            return False
+        current_device = self.kodi.get_audio_output_device()
+        if current_device == self.original_kodi_device:
+            return True
+        self.logger.info(f"Restoring Kodi audio device to: {self.original_kodi_device}")
+        return bool(self.kodi.set_audio_output_device(self.original_kodi_device))
+
+    def acquire_sendspin_audio(self) -> bool:
+        if self._audio_claimed and not self.is_sendspin_audio_released():
+            return True
+
+        if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
+            self._switch_to_alternate()
+
+        success = self.control.acquire_audio()
+        if success:
+            self._audio_claimed = True
+            self.logger.info("Acquired Sendspin audio output.")
+        return success
+
+    def release_sendspin_audio(self) -> bool:
+        success = self.control.release_audio()
+        if success:
+            self._audio_claimed = False
+            self.logger.info("Released Sendspin audio output.")
+        return success
+
+    def release_sendspin_audio_to_kodi(self) -> bool:
+        success = self.release_sendspin_audio()
+        self.restore_kodi_audio_device()
+        return success
 
     def get_kodi_volume_state(self):
         return self.kodi.get_volume_state()
@@ -338,11 +401,9 @@ class SendspinServiceController:
         return self.control.previous_track()
 
     async def cleanup(self) -> None:
+        self.release_sendspin_audio_to_kodi()
         if self.docker_start_enabled:
             self.playback_engine.stop()
         else:
             self.logger.info("Docker backend cleanup skipped because startup is disabled.")
-        if self.original_kodi_device:
-            self.logger.info(f"Restoring audio device to: {self.original_kodi_device}")
-            self.kodi.set_audio_output_device(self.original_kodi_device)
         await self.kodi.cleanup()

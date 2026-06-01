@@ -10,18 +10,19 @@ This add-on is in an ALPHA state. It is experimental and may contain bugs or be 
 
 This addon was developed with the assistance of AI.
 
-## What it does
-
-- Runs as a Kodi audio provider plugin (`plugin.audio.sendspin`).
-- Starts a Docker container to host the Sendspin daemon.
-- Uses a local HTTP control API to keep Kodi and Sendspin in sync.
-- Maps Kodi playback metadata into Kodi's native player UI.
-- Keeps a silent dummy Kodi track playing so ALSA device ownership is retained.
-- Automatically pulls the configured Docker image if it is missing locally.
-
 ## Requirements
 
 - `docker` must be installed and available in the host system `$PATH`. (eg with the docker addon for LibreElec)
+
+## What it does
+
+- Runs as a Kodi audio provider plugin and background service (`plugin.audio.sendspin`).
+- Starts a Docker container to host the Sendspin daemon.
+- Uses a local HTTP control API to keep Kodi and Sendspin in sync.
+- Maps Kodi playback metadata into Kodi's native player UI.
+- Keeps a silent dummy Kodi track playing while Sendspin is active so Kodi's player UI stays in sync.
+- Uses the Sendspin control API to release the backend audio stream while idle so Kodi can reclaim the audio device without restarting the Docker container.
+- Automatically pulls the configured Docker image if it is missing locally.
 
 ## Installation
 
@@ -47,7 +48,7 @@ Configure the add-on from Kodi settings. Current settings include:
 - `Static playback delay (ms)` – optional timing offset for playback.
 - `Docker container name` – default `sendspin-player`.
 - `Docker image name` – default `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi`.
-- `Docker image version` – image tag to pull and run.
+- `Docker image version` – image tag to pull and run (default `2026.6.0`).
 - `Docker config directory` – default `/storage/.config/sendspin`.
 - `Start Docker backend` – disable container startup for API-only or test runs.
 - `Audio device ID override` – force a specific ALSA device index.

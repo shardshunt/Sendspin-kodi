@@ -188,6 +188,34 @@ class DockerPlaybackEngine:
         parsed = urlparse(self.control_url)
         return parsed.hostname or "127.0.0.1", str(parsed.port or 59999)
 
+    def _container_exists(self) -> bool:
+        result = subprocess.run(["docker", "container", "inspect", self.container_name], capture_output=True, text=True)
+        return result.returncode == 0
+
+    def _container_is_running(self) -> bool:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", self.container_name],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0 and result.stdout.strip().lower() == "true"
+
+    def _container_image(self) -> str | None:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{.Config.Image}}", self.container_name],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() or None
+
+    def _start_log_stream(self) -> None:
+        if self.log_thread is not None and self.log_thread.is_alive():
+            return
+        self.log_thread = threading.Thread(target=self._stream_logs, daemon=True)
+        self.log_thread.start()
+
     def start(self):
         if not shutil.which("docker"):
             self.logger.error("Docker not found in PATH.")
@@ -197,7 +225,34 @@ class DockerPlaybackEngine:
         if not self._ensure_image_exists():
             return
 
-        self.stop()
+        if self._container_exists():
+            existing_image = self._container_image()
+            if existing_image == self.versioned_image_name:
+                if self._container_is_running():
+                    self.logger.info(
+                        "Reusing running Docker container %s with image %s",
+                        self.container_name,
+                        self.versioned_image_name,
+                    )
+                    self._start_log_stream()
+                    return
+
+                self.logger.info("Starting existing Docker container: %s", self.container_name)
+                result = subprocess.run(["docker", "start", self.container_name], capture_output=True, text=True)
+                if result.returncode == 0:
+                    self._start_log_stream()
+                else:
+                    self.logger.error("Docker failed to start existing container: %s", result.stderr.strip())
+                return
+
+            self.logger.info(
+                "Recreating Docker container %s because image changed from %s to %s",
+                self.container_name,
+                existing_image,
+                self.versioned_image_name,
+            )
+            self.stop()
+
         self.logger.info(f"Starting Docker container: {self.container_name}")
         control_host, control_port = self._control_host_port()
 
@@ -235,8 +290,7 @@ class DockerPlaybackEngine:
 
         if result.returncode == 0:
             self.logger.info(f"Docker container started. ID: {result.stdout.strip()}")
-            self.log_thread = threading.Thread(target=self._stream_logs, daemon=True)
-            self.log_thread.start()
+            self._start_log_stream()
         else:
             self.logger.error(f"Docker failed to start! Error: {result.stderr.strip()}")
 

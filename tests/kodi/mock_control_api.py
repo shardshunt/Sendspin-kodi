@@ -21,6 +21,10 @@ def initial_state():
             "volume": 30,
             "muted": False,
         },
+        "audio": {
+            "released": True,
+            "stream_active": False,
+        },
     }
 
 
@@ -73,6 +77,16 @@ def apply_command(command, payload):
         volume["muted"] = bool(payload.get("muted", False))
     elif command == "seek":
         state_section("playback")["position"] = max(0, int(float(payload.get("position", 0))))
+    elif command == "release_audio":
+        audio = state_section("audio")
+        audio["released"] = True
+        audio["stream_active"] = False
+    elif command == "acquire_audio":
+        audio = state_section("audio")
+        audio["released"] = False
+        audio["stream_active"] = True
+    elif command == "audio_status":
+        pass
 
 
 def replace_state(payload):
@@ -106,7 +120,10 @@ class Handler(BaseHTTPRequestHandler):
                 command = payload.get("command")
                 record_event("control", payload)
                 apply_command(command, payload)
-                self._write_json({"ok": True, "command": command})
+                response = {"ok": True, "command": command}
+                if command == "audio_status":
+                    response["audio"] = state_section("audio")
+                self._write_json(response)
                 return
 
             if self.path == "/test/reset":
