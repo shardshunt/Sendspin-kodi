@@ -92,10 +92,16 @@ The smoke harness uses Podman when available and can also run with Docker Compos
 
 A helper script is available to package and publish the add-on:
 
-- `python scripts/release.py --check` — validate plugin version alignment and Docker image version alignment, then build `plugin.audio.sendspin.zip`. If `GITHUB_TOKEN` is set, it also checks that the GitHub release tag is unused.
-- `python scripts/release.py --publish` — create a GitHub release and upload the zip asset.
+- `python scripts/release.py --check --token GITHUB_TOKEN` — Runs a comprehensive validation suite:
+    - **Git Integrity**: Ensures the working tree is clean and synced with `origin/main`.
+    - **Version Check**: Validates the `YYYY.Month.Patch` calendar versioning format.
+    - **Metadata Alignment**: Syncs versions across `addon.xml`, `pyproject.toml`, and `settings.xml`.
+    - **Remote Validation**: Verifies the release tag is available and the Docker image exists on GHCR (requires `GITHUB_TOKEN`).
+    - **ZIP Layout**: Builds and verifies the final ZIP structure meets Kodi standards.
+- `python scripts/release.py --publish --token GITHUB_TOKEN` — Performs all checks and, if successful, creates a GitHub release and uploads the asset.
+- `python scripts/release.py --publish --force --token GITHUB_TOKEN` — Bypasses non-critical validation failures (e.g., git cleanliness) to force a release.
 
-Plugin versions in `plugin.audio.sendspin/addon.xml` and `pyproject.toml` must match. Docker image versions are validated separately, so they may differ from the plugin version.
+Plugin versions must follow the `YYYY.Month.Patch` format (e.g., `2026.5.0`).
 
 ### Documentation
 
