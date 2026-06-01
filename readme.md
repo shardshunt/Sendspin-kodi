@@ -90,6 +90,14 @@ The smoke harness uses Podman when available and can also run with Docker Compos
 
 ### Release and packaging
 
+Before packaging, ensure all Python dependencies listed in `pyproject.toml` are synced to the add-on's local library folder:
+
+```bash
+python scripts/get_libs.py
+```
+
+This populates `plugin.audio.sendspin/resources/lib` so the libraries are available within Kodi's isolated Python environment.
+
 A helper script is available to package and publish the add-on:
 
 - `python scripts/release.py --check --token GITHUB_TOKEN` — Runs a comprehensive validation suite:

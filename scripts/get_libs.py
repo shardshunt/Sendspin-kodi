@@ -16,55 +16,56 @@ DEV_PACKAGES = [
     "pytest",
 ]
 
+ROOT = Path(__file__).resolve().parents[1]
+ADDON_DIR = ROOT / "plugin.audio.sendspin"
+TARGET_DIR = ADDON_DIR / "resources" / "lib"
+VENV_DIR = ROOT / ".venv"
 
-def run(cmd: list[str]) -> None:
+
+def run(cmd: list[str], cwd: Path | None = None) -> None:
     print(f"Running: {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, cwd=cwd)
 
 
 def main() -> int:
-    # Path setup
-    tools_dir = Path(__file__).resolve().parent
-    addon_dir = tools_dir.parent
-    project_root = addon_dir.parent
-    target_dir = addon_dir / "resources" / "lib"
-    venv_dir = project_root / ".venv"
+    # 1. Sync dependencies from pyproject.toml
+    # This ensures any project dependencies are present in .venv
+    try:
+        run(["uv", "sync"], cwd=ROOT)
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        print(f"Error: uv sync failed: {exc}")
+        return 1
 
     # Define the pip path inside the venv
-    pip_exe = venv_dir / "bin" / "pip"
-
-    # 1. Sync dependencies from pyproject.toml
-    # This ensures aiohttp, av, numpy, etc. are present in .venv
-    run(["uv", "sync"])
+    pip_exe = VENV_DIR / "bin" / "pip"
+    if not pip_exe.exists():
+        # Fallback for Windows-style venv structure
+        pip_exe = VENV_DIR / "Scripts" / "pip.exe"
 
     if not pip_exe.exists():
         print("Pip not found in venv. Installing pip via uv...")
-        run(["uv", "pip", "install", "pip"])
+        run(["uv", "pip", "install", "pip"], cwd=ROOT)
 
-    # 2. Install aiosendspin specifically into the venv
-    # uv pip interacts directly with the .venv created by uv sync
-    run([str(pip_exe), "install", "aiosendspin==3.0.0", "--no-deps", "--ignore-requires-python"])
+    # 2. Clean and prepare target directory
+    print(f"Cleaning target: {TARGET_DIR}")
+    if TARGET_DIR.exists():
+        shutil.rmtree(TARGET_DIR)
+    TARGET_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 3. Clean and prepare target directory
-    print(f"Cleaning target: {target_dir}")
-    if target_dir.exists():
-        shutil.rmtree(target_dir)
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    # 4. Locate site-packages
+    # 3. Locate site-packages
     # Standard location for Python 3.11 on Unix-like systems
-    site_packages = venv_dir / "lib" / "python3.11" / "site-packages"
+    site_packages = VENV_DIR / "lib" / "python3.11" / "site-packages"
 
     # Fallback for Windows-style venv structure
     if not site_packages.exists():
-        site_packages = venv_dir / "Lib" / "site-packages"
+        site_packages = VENV_DIR / "Lib" / "site-packages"
 
     if not site_packages.exists():
-        print(f"Error: Could not find site-packages in {venv_dir}")
+        print(f"Error: Could not find site-packages in {VENV_DIR}")
         return 1
 
-    # 5. Copy packages to the Kodi addon directory
-    print(f"Copying libraries to {target_dir}...")
+    # 4. Copy packages to the Kodi addon directory
+    print(f"Copying libraries to {TARGET_DIR}...")
     for item in site_packages.iterdir():
         # Skip metadata, installer tools, and cache files
         if item.name.endswith((".dist-info", ".pth", ".pyc")) or item.name in [
@@ -79,7 +80,7 @@ def main() -> int:
             print(f" - Skipping dev dependency: {item.name}")
             continue
 
-        dest = target_dir / item.name
+        dest = TARGET_DIR / item.name
         if item.is_dir():
             shutil.copytree(item, dest)
         else:
