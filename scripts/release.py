@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -236,6 +237,33 @@ def run_checks(
     if not metadata_ok:
         all_passed = False
 
+    # 1.5. Version Format Check (YYYY.M.P)
+    now = datetime.datetime.now(datetime.UTC)
+    fmt_ok = True
+    fmt_detail = ""
+    if version != "unknown":
+        parts = version.split(".")
+        if len(parts) != 3:
+            fmt_ok = False
+            fmt_detail = f"Invalid format {version!r} (expected YYYY.M.P)"
+        else:
+            try:
+                v_year, v_month, _ = map(int, parts)
+                if v_year != now.year:
+                    fmt_ok = False
+                    fmt_detail = f"Year {v_year} != current year {now.year}"
+                elif v_month != now.month:
+                    fmt_ok = False
+                    fmt_detail = f"Month {v_month} != current month {now.month}"
+            except ValueError:
+                fmt_ok = False
+                fmt_detail = "Version components must be integers"
+
+    if version != "unknown":
+        print_status("Version Format Check", fmt_ok, fmt_detail if not fmt_ok else f"{version} matches current date")
+    if not fmt_ok:
+        all_passed = False
+
     # 2. Remote Checks (GitHub Release Tag and Docker Registry)
     token = token_override or os.environ.get("GITHUB_TOKEN")
     tag = tag_for(version, tag_override)
@@ -243,6 +271,7 @@ def run_checks(
     if not token:
         print_status("GitHub Release Check", True, f"Skipped (no token, tag {tag})")
         print_status("Docker Image Check", True, "Skipped (no token)")
+        print_status("Version Sequence Check", True, "Skipped (no token)")
     else:
         try:
             owner, repo = repository()
@@ -259,6 +288,32 @@ def run_checks(
                 else:
                     print_status("Docker Image Check", False, detail)
                     all_passed = False
+
+            # Version Sequence Check
+            if fmt_ok and version != "unknown":
+                v_year, v_month, v_patch = map(int, version.split("."))
+                status, body, _ = github_request("GET", f"/repos/{owner}/{repo}/tags?per_page=100", token)
+                if status == 200:
+                    try:
+                        tags_data = json.loads(body.decode("utf-8"))
+                        prefix = f"v{v_year}.{v_month}."
+                        existing_patches = [
+                            int(t["name"].split(".")[-1])
+                            for t in tags_data
+                            if t.get("name", "").startswith(prefix) and t["name"].split(".")[-1].isdigit()
+                        ]
+                        expected_patch = max(existing_patches) + 1 if existing_patches else 0
+                        seq_ok = v_patch == expected_patch
+                        print_status(
+                            "Version Sequence Check",
+                            seq_ok,
+                            f"Expected {expected_patch}" if not seq_ok else f"Patch {v_patch} is sequential",
+                        )
+                        if not seq_ok:
+                            all_passed = False
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        print_status("Version Sequence Check", False, "Failed to parse tags")
+                        all_passed = False
         except ReleaseError as exc:
             print_status("GitHub/Docker API", False, str(exc))
             all_passed = False
