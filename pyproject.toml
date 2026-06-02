@@ -1,7 +1,7 @@
 [project]
 name = "sendspin-kodi"
-version = "2026.5.0"
-description = "Add your description here"
+version = "2026.6.0"
+description = "Service to manage Sendspin Docker playback with native Kodi player controls."
 readme = "README.md"
 requires-python = ">=3.11, <3.12"
 dependencies = []

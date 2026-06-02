@@ -17,7 +17,7 @@ DEV_PACKAGES = [
 ]
 
 ROOT = Path(__file__).resolve().parents[1]
-ADDON_DIR = ROOT / "plugin.audio.sendspin"
+ADDON_DIR = ROOT / "service.sendspin"
 TARGET_DIR = ADDON_DIR / "resources" / "lib"
 VENV_DIR = ROOT / ".venv"
 

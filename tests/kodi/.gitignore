@@ -1,5 +1,5 @@
 .runtime/
 userdata-podman/*
 !userdata-podman/addon_data/
-!userdata-podman/addon_data/plugin.audio.sendspin/
-!userdata-podman/addon_data/plugin.audio.sendspin/settings.xml
+!userdata-podman/addon_data/service.sendspin/
+!userdata-podman/addon_data/service.sendspin/settings.xml

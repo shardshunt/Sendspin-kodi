@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="service.sendspin" name="Sendspin" version="2026.6.0" provider-name="Shards">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+  </requires>
+  <extension point="xbmc.service" library="service_entry.py" start="login"/>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Sendspin Audio App</summary>
+    <description lang="en_GB">Service to manage Sendspin Docker playback with native Kodi player controls.</description>
+    <platform>all</platform>
+    <assets><icon>icon.png</icon></assets>
+  </extension>
+</addon>

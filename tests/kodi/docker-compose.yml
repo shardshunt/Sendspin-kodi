@@ -9,12 +9,12 @@ services:
       PGID: "${PGID:-1000}"
       TZ: "${TZ:-Pacific/Auckland}"
     ports:
-      - "18080:8080"
-      - "19090:9090"
-      - "19777:9777/udp"
+      - "${KODI_JSONRPC_PORT:-18080}:8080"
+      - "${KODI_WEB_PORT:-19090}:9090"
+      - "${KODI_UDP_PORT:-19777}:9777/udp"
     volumes:
       - ./.runtime/userdata:/config/.kodi/userdata
-      - ./.runtime/addons/plugin.audio.sendspin:/config/.kodi/addons/plugin.audio.sendspin
+      - ./.runtime/addons/service.sendspin:/config/.kodi/addons/service.sendspin
 
   sendspin-control-mock:
     image: python:3.12-slim
@@ -23,4 +23,4 @@ services:
     volumes:
       - ./mock_control_api.py:/app/mock_control_api.py:ro
     ports:
-      - "59999:59999"
+      - "${CONTROL_API_PORT:-59999}:59999"

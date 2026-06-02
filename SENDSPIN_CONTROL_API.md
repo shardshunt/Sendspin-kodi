@@ -117,6 +117,46 @@ Fields:
 
 - `position`: target playback position in seconds, minimum `0`.
 
+### Release Audio
+
+```json
+{
+  "command": "release_audio"
+}
+```
+
+Closes the daemon's local audio stream and drops incoming chunks until audio is acquired again. This lets Kodi reclaim the shared audio device without restarting the Docker container.
+
+### Acquire Audio
+
+```json
+{
+  "command": "acquire_audio"
+}
+```
+
+Allows the daemon to reopen the configured audio device when new chunks arrive.
+
+### Audio Status
+
+```json
+{
+  "command": "audio_status"
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "audio": {
+    "released": true,
+    "stream_active": false
+  }
+}
+```
+
 ## `GET /state`
 
 Return the daemon's current playback state.
@@ -139,6 +179,10 @@ Example response:
   "volume": {
     "volume": 42,
     "muted": false
+  },
+  "audio": {
+    "released": false,
+    "stream_active": true
   }
 }
 ```
@@ -154,6 +198,8 @@ Fields:
 - `playback.speed`: `0` for paused, positive value for playing.
 - `volume.volume`: current Sendspin volume, integer from `0` to `100`.
 - `volume.muted`: current mute state.
+- `audio.released`: whether the daemon has released the local audio output device.
+- `audio.stream_active`: whether the daemon currently has an active local audio stream. If the daemon has released the audio device (`released: true`), `stream_active` immediately transitions to `true` when a new stream is received from the server (e.g., during play/resume events), which also sets `playback.speed` to `1000` (speed 1.0). This allows the connecting client to detect the incoming stream and invoke `acquire_audio` to reclaim the audio hardware.
 
 During startup or idle states, `track`, `playback`, and `volume` may be empty objects, but the response must remain valid JSON:
 
@@ -161,7 +207,11 @@ During startup or idle states, `track`, `playback`, and `volume` may be empty ob
 {
   "track": {},
   "playback": {},
-  "volume": {}
+  "volume": {},
+  "audio": {
+    "released": true,
+    "stream_active": false
+  }
 }
 ```
 
@@ -188,11 +238,11 @@ curl -X POST http://127.0.0.1:59999/control \
 Kodi can forward explicit add-on actions to this API:
 
 ```text
-plugin://plugin.audio.sendspin?action=play
-plugin://plugin.audio.sendspin?action=pause
-plugin://plugin.audio.sendspin?action=playpause
-plugin://plugin.audio.sendspin?action=next
-plugin://plugin.audio.sendspin?action=previous
+plugin://service.sendspin?action=play
+plugin://service.sendspin?action=pause
+plugin://service.sendspin?action=playpause
+plugin://service.sendspin?action=next
+plugin://service.sendspin?action=previous
 ```
 
 These routes call `POST /control` internally.
