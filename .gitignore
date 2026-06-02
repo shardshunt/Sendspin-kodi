@@ -16,7 +16,7 @@ env/
 xbmc/
 
 # Ignore vendored addon libraries (keeps repo small)
-plugin.audio.sendspin/resources/lib/
+service.sendspin/resources/lib/
 
 # Deployment script (machine-specific)
 upload

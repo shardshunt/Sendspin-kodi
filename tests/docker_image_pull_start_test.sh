@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SETTINGS_XML="$ROOT_DIR/plugin.audio.sendspin/resources/settings.xml"
-VERSION_FILE="$ROOT_DIR/plugin.audio.sendspin/docker_image_version.txt"
+SETTINGS_XML="$ROOT_DIR/service.sendspin/resources/settings.xml"
+VERSION_FILE="$ROOT_DIR/service.sendspin/docker_image_version.txt"
 
 if [ ! -f "$SETTINGS_XML" ]; then
   echo "Missing settings.xml at $SETTINGS_XML" >&2

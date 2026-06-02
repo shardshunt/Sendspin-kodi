@@ -14,7 +14,7 @@ POD_NAME="sendspin-kodi-test"
 PODMAN_KODI_CONTAINER="sendspin-kodi-test-kodi"
 PODMAN_MOCK_CONTAINER="sendspin-control-mock"
 RUNTIME_DIR="$ROOT_DIR/tests/kodi/.runtime"
-RUNTIME_ADDON_DIR="$RUNTIME_DIR/addons/plugin.audio.sendspin"
+RUNTIME_ADDON_DIR="$RUNTIME_DIR/addons/service.sendspin"
 RUNTIME_USERDATA_PODMAN_DIR="$RUNTIME_DIR/userdata-podman"
 
 select_free_port() {
@@ -94,7 +94,7 @@ cleanup_runtime_tree() {
 prepare_runtime_tree() {
   cleanup_runtime_tree
   mkdir -p "$RUNTIME_ADDON_DIR" "$RUNTIME_USERDATA_PODMAN_DIR"
-  cp -a "$ROOT_DIR/plugin.audio.sendspin/." "$RUNTIME_ADDON_DIR/"
+  cp -a "$ROOT_DIR/service.sendspin/." "$RUNTIME_ADDON_DIR/"
   cp -a "$ROOT_DIR/tests/kodi/userdata-podman/." "$RUNTIME_USERDATA_PODMAN_DIR/"
 
   find "$RUNTIME_ADDON_DIR" -type d -name "__pycache__" -prune -exec rm -rf {} +
@@ -159,7 +159,7 @@ open_plugin_url() {
 }
 
 run_plugin_action() {
-  jsonrpc "{\"jsonrpc\":\"2.0\",\"method\":\"Files.GetDirectory\",\"params\":{\"directory\":\"plugin://plugin.audio.sendspin/?action=$1\",\"media\":\"music\"},\"id\":4}" >/dev/null
+  jsonrpc "{\"jsonrpc\":\"2.0\",\"method\":\"Files.GetDirectory\",\"params\":{\"directory\":\"plugin://service.sendspin/?action=$1\",\"media\":\"music\"},\"id\":4}" >/dev/null
 }
 
 start_harness() {
@@ -187,17 +187,17 @@ start_harness() {
     -e "PGID=${PGID:-$(id -g)}" \
     -e "TZ=${TZ:-Pacific/Auckland}" \
     -v "$RUNTIME_USERDATA_PODMAN_DIR:/config/.kodi/userdata:Z" \
-    -v "$RUNTIME_ADDON_DIR:/config/.kodi/addons/plugin.audio.sendspin:Z" \
+    -v "$RUNTIME_ADDON_DIR:/config/.kodi/addons/service.sendspin:Z" \
     matthuisman/kodi-headless:Omega
 
   wait_for_mock_api
   wait_for_kodi
   mock_post "/test/reset" "{}"
-  jsonrpc '{"jsonrpc":"2.0","method":"Addons.SetAddonEnabled","params":{"addonid":"plugin.audio.sendspin","enabled":true},"id":2}' >/dev/null
+  jsonrpc '{"jsonrpc":"2.0","method":"Addons.SetAddonEnabled","params":{"addonid":"service.sendspin","enabled":true},"id":2}' >/dev/null
 }
 
 run_state_scenarios() {
-  open_plugin_url "plugin://plugin.audio.sendspin/"
+  open_plugin_url "plugin://service.sendspin/"
   sleep 3
 
   mock_post "/test/state" '{"track":{},"playback":{},"volume":{}}'
@@ -226,7 +226,7 @@ run_direct_control_command_scenarios() {
 run_delay_setting_scenario() {
   python3 - <<PY
 import xml.etree.ElementTree as ET
-path = "$RUNTIME_USERDATA_PODMAN_DIR/addon_data/plugin.audio.sendspin/settings.xml"
+path = "$RUNTIME_USERDATA_PODMAN_DIR/addon_data/service.sendspin/settings.xml"
 tree = ET.parse(path)
 root = tree.getroot()
 for setting in root.findall('setting'):

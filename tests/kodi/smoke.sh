@@ -15,7 +15,7 @@ POD_NAME="sendspin-kodi-test"
 PODMAN_KODI_CONTAINER="sendspin-kodi-test-kodi"
 PODMAN_MOCK_CONTAINER="sendspin-control-mock"
 RUNTIME_DIR="$ROOT_DIR/tests/kodi/.runtime"
-RUNTIME_ADDON_DIR="$RUNTIME_DIR/addons/plugin.audio.sendspin"
+RUNTIME_ADDON_DIR="$RUNTIME_DIR/addons/service.sendspin"
 RUNTIME_USERDATA_PODMAN_DIR="$RUNTIME_DIR/userdata-podman"
 RUNTIME_USERDATA_COMPOSE_DIR="$RUNTIME_DIR/userdata"
 
@@ -96,7 +96,7 @@ prepare_runtime_tree() {
   mkdir -p "$RUNTIME_USERDATA_PODMAN_DIR"
   mkdir -p "$RUNTIME_USERDATA_COMPOSE_DIR"
 
-  cp -a "$ROOT_DIR/plugin.audio.sendspin/." "$RUNTIME_ADDON_DIR/"
+  cp -a "$ROOT_DIR/service.sendspin/." "$RUNTIME_ADDON_DIR/"
   cp -a "$ROOT_DIR/tests/kodi/userdata-podman/." "$RUNTIME_USERDATA_PODMAN_DIR/"
   cp -a "$ROOT_DIR/tests/kodi/userdata/." "$RUNTIME_USERDATA_COMPOSE_DIR/"
 
@@ -151,12 +151,12 @@ curl_retry() {
 run_smoke_requests() {
   curl_retry "enable addon" -fsS "$JSONRPC_URL" \
     -H "Content-Type: application/json" \
-    --data '{"jsonrpc":"2.0","method":"Addons.SetAddonEnabled","params":{"addonid":"plugin.audio.sendspin","enabled":true},"id":2}'
+    --data '{"jsonrpc":"2.0","method":"Addons.SetAddonEnabled","params":{"addonid":"service.sendspin","enabled":true},"id":2}'
   echo
 
   curl_retry "open plugin" -fsS "$JSONRPC_URL" \
     -H "Content-Type: application/json" \
-    --data '{"jsonrpc":"2.0","method":"Player.Open","params":{"item":{"file":"plugin://plugin.audio.sendspin/"}},"id":3}'
+    --data '{"jsonrpc":"2.0","method":"Player.Open","params":{"item":{"file":"plugin://service.sendspin/"}},"id":3}'
   echo
 }
 
@@ -164,7 +164,7 @@ show_podman_diagnostics() {
   echo
   echo "Kodi add-on log lines:"
   podman exec "$PODMAN_KODI_CONTAINER" sh -c \
-    "test -f /config/.kodi/temp/kodi.log && grep -Ei 'sendspin|plugin.audio.sendspin|error|exception' /config/.kodi/temp/kodi.log | tail -n 120 || true"
+    "test -f /config/.kodi/temp/kodi.log && grep -Ei 'sendspin|service.sendspin|error|exception' /config/.kodi/temp/kodi.log | tail -n 120 || true"
 
   echo
   echo "Mock control API log lines:"
@@ -176,13 +176,13 @@ show_compose_diagnostics() {
   echo "Kodi add-on log lines:"
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     docker compose -f "$COMPOSE_FILE" exec -T kodi sh -c \
-      "test -f /config/.kodi/temp/kodi.log && grep -Ei 'sendspin|plugin.audio.sendspin|error|exception' /config/.kodi/temp/kodi.log | tail -n 120 || true"
+      "test -f /config/.kodi/temp/kodi.log && grep -Ei 'sendspin|service.sendspin|error|exception' /config/.kodi/temp/kodi.log | tail -n 120 || true"
     echo
     echo "Mock control API log lines:"
     docker compose -f "$COMPOSE_FILE" logs --tail=80 sendspin-control-mock || true
   elif command -v podman >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
     podman compose -f "$COMPOSE_FILE" exec -T kodi sh -c \
-      "test -f /config/.kodi/temp/kodi.log && grep -Ei 'sendspin|plugin.audio.sendspin|error|exception' /config/.kodi/temp/kodi.log | tail -n 120 || true"
+      "test -f /config/.kodi/temp/kodi.log && grep -Ei 'sendspin|service.sendspin|error|exception' /config/.kodi/temp/kodi.log | tail -n 120 || true"
     echo
     echo "Mock control API log lines:"
     podman compose -f "$COMPOSE_FILE" logs --tail=80 sendspin-control-mock || true
@@ -214,7 +214,7 @@ run_with_podman() {
     -e "PGID=${PGID:-$(id -g)}" \
     -e "TZ=${TZ:-Pacific/Auckland}" \
     -v "$RUNTIME_USERDATA_PODMAN_DIR:/config/.kodi/userdata:Z" \
-    -v "$RUNTIME_ADDON_DIR:/config/.kodi/addons/plugin.audio.sendspin:Z" \
+    -v "$RUNTIME_ADDON_DIR:/config/.kodi/addons/service.sendspin:Z" \
     matthuisman/kodi-headless:Omega
 
   wait_for_mock_api

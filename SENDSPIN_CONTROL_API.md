@@ -238,11 +238,11 @@ curl -X POST http://127.0.0.1:59999/control \
 Kodi can forward explicit add-on actions to this API:
 
 ```text
-plugin://plugin.audio.sendspin?action=play
-plugin://plugin.audio.sendspin?action=pause
-plugin://plugin.audio.sendspin?action=playpause
-plugin://plugin.audio.sendspin?action=next
-plugin://plugin.audio.sendspin?action=previous
+plugin://service.sendspin?action=play
+plugin://service.sendspin?action=pause
+plugin://service.sendspin?action=playpause
+plugin://service.sendspin?action=next
+plugin://service.sendspin?action=previous
 ```
 
 These routes call `POST /control` internally.

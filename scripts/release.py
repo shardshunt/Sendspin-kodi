@@ -17,11 +17,11 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
-ADDON_DIR = ROOT / "plugin.audio.sendspin"
+ADDON_DIR = ROOT / "service.sendspin"
 ADDON_XML = ADDON_DIR / "addon.xml"
 SETTINGS_XML = ADDON_DIR / "resources" / "settings.xml"
 PYPROJECT = ROOT / "pyproject.toml"
-ASSET_NAME = "plugin.audio.sendspin.zip"
+ASSET_NAME = "service.sendspin.zip"
 ZIP_PATH = ROOT / ASSET_NAME
 DOCKER_PACKAGE_NAME = "sendspin-cli-for-sendspin-kodi"
 API_ROOT = "https://api.github.com"
@@ -398,7 +398,7 @@ def create_release(owner: str, repo: str, tag: str, version: str, token: str) ->
         "tag_name": tag,
         "target_commitish": os.environ.get("GITHUB_SHA") or run_git(["rev-parse", "HEAD"]),
         "name": f"Sendspin Kodi {version}",
-        "body": f"Release {version} for plugin.audio.sendspin.",
+        "body": f"Release {version} for service.sendspin.",
         "draft": False,
         "prerelease": False,
     }
@@ -454,7 +454,7 @@ def publish(tag_override: str | None = None, token_override: str | None = None, 
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate, package, and publish plugin.audio.sendspin releases.")
+    parser = argparse.ArgumentParser(description="Validate, package, and publish service.sendspin releases.")
     parser.add_argument(
         "--check",
         action="store_true",

@@ -12,7 +12,7 @@ On Bazzite DX, the default path is Podman-native and does not require Docker or 
 tests/kodi/smoke.sh
 ```
 
-That creates a Podman pod named `sendspin-kodi-test`, starts the mock API and Kodi in that pod, opens `plugin://plugin.audio.sendspin/`, then prints the last Kodi log lines.
+That creates a Podman pod named `sendspin-kodi-test`, starts the mock API and Kodi in that pod, opens `plugin://service.sendspin/`, then prints the last Kodi log lines.
 
 For a broader API scenario run:
 
@@ -51,7 +51,7 @@ docker compose -f tests/kodi/docker-compose.yml down
 ## What It Covers
 
 - Kodi can boot with this add-on mounted.
-- Kodi can enable and resolve `plugin.audio.sendspin`.
+- Kodi can enable and resolve `service.sendspin`.
 - The add-on can call `/state` and `/control` on the configured control API.
 - Kodi logs contain the add-on startup and cleanup messages.
 - `api_scenarios.sh` checks all documented control commands: `play`, `pause`, `toggle_play_pause`, `next`, `previous`, `set_volume`, and `seek`.

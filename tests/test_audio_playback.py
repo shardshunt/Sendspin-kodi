@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 # Ensure the plugin directory is in the path so python can import its modules.
-PLUGIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "plugin.audio.sendspin"))
+PLUGIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "service.sendspin"))
 if PLUGIN_DIR not in sys.path:
     sys.path.insert(0, PLUGIN_DIR)
 

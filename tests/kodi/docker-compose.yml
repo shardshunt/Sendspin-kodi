@@ -14,7 +14,7 @@ services:
       - "${KODI_UDP_PORT:-19777}:9777/udp"
     volumes:
       - ./.runtime/userdata:/config/.kodi/userdata
-      - ./.runtime/addons/plugin.audio.sendspin:/config/.kodi/addons/plugin.audio.sendspin
+      - ./.runtime/addons/service.sendspin:/config/.kodi/addons/service.sendspin
 
   sendspin-control-mock:
     image: python:3.12-slim
