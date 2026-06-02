@@ -307,11 +307,13 @@ class SendspinServiceController:
         self.logger.info(f"Captured original audio device: {self.original_kodi_device}")
 
         # Temporarily free Kodi's audio device so the Docker container can probe all devices (including busy ones)
+        switched_temp = False
         if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
             self.logger.info("Temporarily freeing Kodi audio device to allow Docker backend device probing...")
             self._switch_to_alternate()
             current_device = self.kodi.get_audio_output_device()
             if current_device != self.original_kodi_device:
+                switched_temp = True
                 await asyncio.sleep(1.5)  # Wait for Kodi to release the ALSA device
 
         kodi_volume = self.kodi.get_volume_state()
@@ -346,9 +348,14 @@ class SendspinServiceController:
             else:
                 self.logger.warning("Sendspin control API did not become available during setup.")
         finally:
-            # We keep Kodi on the alternate device (ALSA:default) to free HDMI 4 for the Sendspin daemon.
-            # It will be restored only when Kodi plays a video, or when the service shuts down (in cleanup).
-            pass
+            # Restore original device after Docker has started/probed and server had time to connect/handshake
+            if switched_temp:
+                self.logger.info(
+                    "Waiting for server connection and format probing before restoring Kodi audio device..."
+                )
+                await asyncio.sleep(8.0)  # Wait 8 seconds for server connection and format probing to complete cleanly
+                self.logger.info("Restoring original Kodi audio device after Docker startup...")
+                self.restore_kodi_audio_device()
 
     def _switch_to_alternate(self):
         # Try common safe fallbacks

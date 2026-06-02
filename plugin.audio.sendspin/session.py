@@ -100,39 +100,11 @@ async def run_session(controller: SendspinServiceController):
             if is_setting_enabled("activate_visualisation_enabled"):
                 xbmc.executebuiltin("ActivateWindow(visualisation)")
 
-        def release_audio():
-            nonlocal audio_claimed
-            if player.isPlaying():
-                controller.suppress_kodi_player_events()
-                player.stop()
-            controller.release_sendspin_audio_to_kodi()
-            audio_claimed = False
-
         log.info("Entering Sendspin service loop. Audio will be claimed on active playback.")
 
         while not monitor.abortRequested():
+            was_audio_claimed_before = audio_claimed
             loop_time = asyncio.get_running_loop().time()
-
-            # Check if Kodi is playing a video
-            kodi_playing_video = False
-            try:
-                kodi_playing_video = player.isPlaying() and player.isPlayingVideo()
-            except Exception:
-                pass
-
-            if kodi_playing_video:
-                if audio_claimed:
-                    log.info("Kodi video playback detected. Releasing hardware to Kodi.")
-                    release_audio()
-                await asyncio.sleep(poll_interval_seconds)
-                continue
-
-            # Ensure hardware is free for Sendspin by default (Kodi on alternate ALSA device)
-            if not audio_claimed:
-                log.info("Kodi is idle. Freeing hardware and acquiring Sendspin audio...")
-                if controller.acquire_sendspin_audio():
-                    audio_claimed = True
-
             sendspin_state = await asyncio.get_running_loop().run_in_executor(None, controller.get_sendspin_state)
             track_info = {}
             playback_state = {}
@@ -145,16 +117,74 @@ async def run_session(controller: SendspinServiceController):
                 audio_state = sendspin_state.get("audio") or {}
                 sendspin_volume_state = get_state_volume(sendspin_state)
 
-            active = is_sendspin_active(track_info, playback_state, audio_state)
+            has_track = bool(track_info)
+            audio_active = audio_state.get("stream_active", False)
+            try:
+                speed = float(playback_state.get("speed", 0))
+            except (TypeError, ValueError):
+                speed = 0.0
+            is_playing = audio_active or speed > 0.0
 
-            if active:
-                if not player.isPlaying():
-                    await start_playback()
-            elif player.isPlaying():
-                log.info("Sendspin inactive; stopping dummy playback track.")
-                controller.suppress_kodi_player_events()
-                player.stop()
+            # Sync playback and audio device state
+            is_kodi_playing = player.isPlaying()
+            is_kodi_paused = xbmc.getCondVisibility("Player.Paused") if is_kodi_playing else False
 
+            if not has_track:
+                # State 3: Stopped/Idle
+                if is_kodi_playing:
+                    log.info("Sendspin idle: stopping dummy playback and releasing audio.")
+                    controller.suppress_kodi_player_events()
+                    player.stop()
+                if audio_claimed:
+                    controller.release_sendspin_audio_to_kodi()
+                    audio_claimed = False
+            else:
+                # State 1 or 2: Playing or Paused
+                if is_playing:
+                    if not audio_claimed:
+                        log.info("Sendspin playing: acquiring audio device.")
+                        if controller.original_kodi_device and "alsa" in controller.original_kodi_device.lower():
+                            controller._switch_to_alternate()
+                            await asyncio.sleep(1.5)  # Wait for Kodi to release the ALSA device
+                        if controller.acquire_sendspin_audio():
+                            audio_claimed = True
+                            await asyncio.sleep(0.5)  # Give Docker a smidge to lock the hardware device
+                            log.info("Playback active; resetting stream to get headers...")
+                            controller.send_pause()
+                            await asyncio.sleep(0.3)
+                            controller.send_play()
+                        else:
+                            log.warning("Failed to acquire Sendspin audio device.")
+
+                    if not is_kodi_playing:
+                        if is_setting_enabled("require_dummy_playback") and was_audio_claimed_before:
+                            log.info("Dummy playback stopped by user; pausing Sendspin and releasing audio.")
+                            controller.send_pause()
+                            controller.release_sendspin_audio_to_kodi()
+                            audio_claimed = False
+                        else:
+                            log.info("Sendspin playing: starting dummy playback...")
+                            await start_playback()
+                            is_kodi_playing = True
+                            is_kodi_paused = False
+
+                    if is_kodi_playing and is_kodi_paused:
+                        log.info("Sendspin playing: resuming Kodi dummy playback.")
+                        controller.suppress_kodi_player_events()
+                        player.pause()
+                else:
+                    # State 2: Paused
+                    if audio_claimed:
+                        log.info("Sendspin paused: releasing audio device back to Kodi.")
+                        controller.release_sendspin_audio_to_kodi()
+                        audio_claimed = False
+
+                    if is_kodi_playing and not is_kodi_paused:
+                        log.info("Sendspin paused: pausing Kodi dummy playback.")
+                        controller.suppress_kodi_player_events()
+                        player.pause()
+
+            # Handle volume sync
             if loop_time - last_volume_poll_time >= volume_poll_interval_seconds:
                 last_volume_poll_time = loop_time
                 kodi_volume_state = controller.get_kodi_volume_state()
@@ -195,7 +225,8 @@ async def run_session(controller: SendspinServiceController):
                     if controller.set_sendspin_delay(current_delay_ms):
                         log.info("Applied Sendspin delay from Kodi setting: %sms", current_delay_ms)
 
-            if active and track_info:
+            # Handle metadata updates
+            if has_track and track_info:
                 title = track_info.get("title")
                 artist = track_info.get("artist") or "Unknown Artist"
                 album = track_info.get("album") or "Unknown Album"
@@ -217,13 +248,14 @@ async def run_session(controller: SendspinServiceController):
                     if thumb:
                         list_item.setArt({"thumb": thumb})
 
-                    await start_playback()
+                    if is_playing:
+                        await start_playback()
                     last_seen_title = title
 
-            if active and playback_state and player.isPlaying():
+            # Handle seeking and duration sync
+            if has_track and playback_state and player.isPlaying():
                 position = playback_state.get("position", 0)
                 duration = playback_state.get("duration", 0)
-                speed = playback_state.get("speed", 1)
 
                 if duration > 0 and duration != current_duration:
                     player.getMusicInfoTag().setDuration(int(duration))
@@ -233,25 +265,8 @@ async def run_session(controller: SendspinServiceController):
                 if abs(current_kodi_pos - position) > 1.0:
                     player.seekTime(position)
 
-                is_kodi_paused = xbmc.getCondVisibility("Player.Paused")
-                if speed == 0 and not is_kodi_paused:
-                    log.info("Sendspin paused; pausing Kodi.")
-                    controller.suppress_kodi_player_events()
-                    player.pause()
-                elif speed > 0 and is_kodi_paused:
-                    log.info("Sendspin resumed; resuming Kodi.")
-                    controller.suppress_kodi_player_events()
-                    player.pause()
-
-            if active and not player.isPlaying():
-                if is_setting_enabled("require_dummy_playback"):
-                    log.info("Dummy playback stopped while Sendspin was active; pausing and releasing audio.")
-                    controller.send_pause()
-                    release_audio()
-                await asyncio.sleep(poll_interval_seconds)
-                continue
-
-            if active:
+            # Dummy track EOF loop/rewind check
+            if player.isPlaying():
                 try:
                     total_time = player.getTotalTime()
                     current_time = player.getTime()

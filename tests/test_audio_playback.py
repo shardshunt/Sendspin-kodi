@@ -327,19 +327,27 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
 
         # --- Assertions ---
 
-        # 1. Acquire audio: should be called once at start when Kodi is idle
+        # 1. Acquire audio: should be called twice (Iteration 1: start, Iteration 4: resume)
         # Note: session.py calls controller.acquire_sendspin_audio(), which calls control.acquire_audio()
-        self.assertEqual(mock_client.acquire_audio.call_count, 1, "Expected acquire_audio to be called exactly once")
+        self.assertEqual(mock_client.acquire_audio.call_count, 2, "Expected acquire_audio to be called exactly twice")
 
-        # 2. Release audio: should only be called during cleanup (finally block)
-        # So we expect 1 call.
-        self.assertEqual(mock_client.release_audio.call_count, 1, "Expected release_audio to be called exactly once")
+        # 2. Release audio: should be called at pause (Iteration 3), stop (Iteration 5), and cleanup (finally block)
+        # Let's count calls to control.release_audio()
+        # - Iteration 3 (Pause): release_audio is called inside loop.
+        # - Iteration 5 (Stop): release_audio is called inside loop.
+        # - Cleanup (finally): controller.cleanup() calls release_sendspin_audio_to_kodi() which calls release_audio.
+        # So we expect 3 calls.
+        self.assertEqual(
+            mock_client.release_audio.call_count, 3, "Expected release_audio to be called exactly three times"
+        )
 
         # 3. Verify Player operations:
-        # Dummy playback started on acquire_audio (2 times) and track change detection (1 time)
-        self.assertEqual(len(player.play_calls), 3, "Expected player.play to be called three times")
-        # Dummy playback stopped on release_audio (Iteration 3: pause, Iteration 5: stop)
-        self.assertEqual(len(player.stop_calls), 2, "Expected player.stop to be called twice (pause & stop)")
+        # Dummy playback started on acquire_audio/playing transition (1 time) and track change detection (1 time)
+        self.assertEqual(len(player.play_calls), 2, "Expected player.play to be called twice")
+        # Dummy playback stopped on full stop (Iteration 5)
+        self.assertEqual(
+            len(player.stop_calls), 1, "Expected player.stop to be called once (only on full stop, not pause)"
+        )
 
         print("[TEST HARNESS] All assertions passed successfully!")
 
