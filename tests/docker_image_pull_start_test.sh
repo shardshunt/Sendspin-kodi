@@ -3,13 +3,19 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETTINGS_XML="$ROOT_DIR/plugin.audio.sendspin/resources/settings.xml"
+VERSION_FILE="$ROOT_DIR/plugin.audio.sendspin/docker_image_version.txt"
 
 if [ ! -f "$SETTINGS_XML" ]; then
   echo "Missing settings.xml at $SETTINGS_XML" >&2
   exit 1
 fi
 
-read -r DEFAULT_IMAGE_NAME DEFAULT_IMAGE_TAG < <(SETTINGS_XML="$SETTINGS_XML" python3 - <<'PY'
+if [ ! -f "$VERSION_FILE" ]; then
+  echo "Missing docker image version file at $VERSION_FILE" >&2
+  exit 1
+fi
+
+read -r DEFAULT_IMAGE_NAME < <(SETTINGS_XML="$SETTINGS_XML" python3 - <<'PY'
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -25,9 +31,11 @@ settings = {
     item.attrib.get("id"): item.attrib.get("default", "")
     for item in root.findall(".//setting")
 }
-print(f'{settings.get("docker_image_name", "")}\t{settings.get("docker_image_version", "")}')
+print(settings.get("docker_image_name", ""))
 PY
 )
+
+DEFAULT_IMAGE_TAG="$(<"$VERSION_FILE")"
 
 IMAGE_NAME="${SENDSPIN_IMAGE_NAME:-$DEFAULT_IMAGE_NAME}"
 IMAGE_TAG="${SENDSPIN_IMAGE_TAG:-$DEFAULT_IMAGE_TAG}"
@@ -38,7 +46,7 @@ if [ -z "$IMAGE_NAME" ]; then
 fi
 
 if [ -z "$IMAGE_TAG" ]; then
-  echo "Failed to determine image tag from $SETTINGS_XML" >&2
+  echo "Failed to determine image tag from $VERSION_FILE" >&2
   exit 1
 fi
 
