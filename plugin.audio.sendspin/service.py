@@ -324,9 +324,6 @@ class SendspinServiceController:
             self.logger.warning(f"No original Kodi device found; using fallback: {audio_device_id}")
         self.playback_engine.audio_device = audio_device_id
 
-        if self.docker_start_enabled and self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
-            self._switch_to_alternate()
-
         if self.docker_start_enabled:
             self.playback_engine.start()
         else:
@@ -335,8 +332,7 @@ class SendspinServiceController:
                 self.control.set_delay(self._last_applied_delay_ms)
 
         if self.wait_for_control_api():
-            if self.release_sendspin_audio():
-                self.restore_kodi_audio_device()
+            self.logger.info("Docker backend started with release-audio-on-start; no manual release required.")
         else:
             self.logger.warning("Sendspin control API did not become available during setup.")
 

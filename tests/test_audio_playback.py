@@ -328,15 +328,14 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         # Note: session.py calls controller.acquire_sendspin_audio(), which calls control.acquire_audio()
         self.assertEqual(mock_client.acquire_audio.call_count, 2, "Expected acquire_audio to be called exactly twice")
 
-        # 2. Release audio: should be called at setup, pause (Iteration 3), stop (Iteration 5), and cleanup (finally block)
+        # 2. Release audio: should be called at pause (Iteration 3), stop (Iteration 5), and cleanup (finally block)
         # Let's count calls to control.release_audio()
-        # - setup(): release_sendspin_audio() is called to ensure initial clean state.
         # - Iteration 3 (Pause): release_audio is called inside loop.
         # - Iteration 5 (Stop): release_audio is called inside loop.
         # - Cleanup (finally): controller.cleanup() calls release_sendspin_audio_to_kodi() which calls release_audio.
-        # So we expect 4 calls.
+        # So we expect 3 calls.
         self.assertEqual(
-            mock_client.release_audio.call_count, 4, "Expected release_audio to be called exactly four times"
+            mock_client.release_audio.call_count, 3, "Expected release_audio to be called exactly three times"
         )
 
         # 3. Verify Player operations:

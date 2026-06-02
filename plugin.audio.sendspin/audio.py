@@ -281,6 +281,7 @@ class DockerPlaybackEngine:
             control_host,
             "--control-port",
             control_port,
+            "--release-audio-on-start",
         ]
 
         executable_command = shlex.join(cmd)
