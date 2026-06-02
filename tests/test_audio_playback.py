@@ -138,6 +138,9 @@ class MockKodiPlayer:
     def isPlaying(self):
         return self._is_playing
 
+    def isPlayingVideo(self):
+        return False
+
     def getTime(self):
         return self._time
 
@@ -324,19 +327,13 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
 
         # --- Assertions ---
 
-        # 1. Acquire audio: should be called twice (Iteration 1: start, Iteration 4: resume)
+        # 1. Acquire audio: should be called once at start when Kodi is idle
         # Note: session.py calls controller.acquire_sendspin_audio(), which calls control.acquire_audio()
-        self.assertEqual(mock_client.acquire_audio.call_count, 2, "Expected acquire_audio to be called exactly twice")
+        self.assertEqual(mock_client.acquire_audio.call_count, 1, "Expected acquire_audio to be called exactly once")
 
-        # 2. Release audio: should be called at pause (Iteration 3), stop (Iteration 5), and cleanup (finally block)
-        # Let's count calls to control.release_audio()
-        # - Iteration 3 (Pause): release_audio is called inside loop.
-        # - Iteration 5 (Stop): release_audio is called inside loop.
-        # - Cleanup (finally): controller.cleanup() calls release_sendspin_audio_to_kodi() which calls release_audio.
-        # So we expect 3 calls.
-        self.assertEqual(
-            mock_client.release_audio.call_count, 3, "Expected release_audio to be called exactly three times"
-        )
+        # 2. Release audio: should only be called during cleanup (finally block)
+        # So we expect 1 call.
+        self.assertEqual(mock_client.release_audio.call_count, 1, "Expected release_audio to be called exactly once")
 
         # 3. Verify Player operations:
         # Dummy playback started on acquire_audio (2 times) and track change detection (1 time)
