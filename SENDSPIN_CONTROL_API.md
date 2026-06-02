@@ -199,7 +199,7 @@ Fields:
 - `volume.volume`: current Sendspin volume, integer from `0` to `100`.
 - `volume.muted`: current mute state.
 - `audio.released`: whether the daemon has released the local audio output device.
-- `audio.stream_active`: whether the daemon currently has an active local audio stream.
+- `audio.stream_active`: whether the daemon currently has an active local audio stream. If the daemon has released the audio device (`released: true`), `stream_active` immediately transitions to `true` when a new stream is received from the server (e.g., during play/resume events), which also sets `playback.speed` to `1000` (speed 1.0). This allows the connecting client to detect the incoming stream and invoke `acquire_audio` to reclaim the audio hardware.
 
 During startup or idle states, `track`, `playback`, and `volume` may be empty objects, but the response must remain valid JSON:
 
