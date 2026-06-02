@@ -132,7 +132,7 @@ class DockerPlaybackEngine:
             if xbmcgui is not None:
                 try:
                     dialog = xbmcgui.DialogProgress()
-                    dialog.create("Pulling Docker image", f"{self.versioned_image_name}")
+                    dialog.create("Pulling Docker image (this may take a while)", f"{self.versioned_image_name}")
                 except Exception:
                     dialog = None
 
