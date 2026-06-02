@@ -48,7 +48,7 @@ Configure the add-on from Kodi settings. Current settings include:
 - `Static playback delay (ms)` – optional timing offset for playback.
 - `Docker container name` – default `sendspin-player`.
 - `Docker image name` – default `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi`.
-- `Docker image version` – image tag to pull and run (default `2026.6.0`).
+- Docker image tag is defined in `plugin.audio.sendspin/docker_image_version.txt`.
 - `Docker config directory` – default `/storage/.config/sendspin`.
 - `Start Docker backend` – disable container startup for API-only or test runs.
 - `Audio device ID override` – force a specific ALSA device index.
@@ -75,7 +75,7 @@ Default control API settings:
 ### Docker and image behavior
 
 - The add-on uses the configured Docker image and container name.
-- It pulls `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi` using the configured Docker image version as the image tag.
+- It pulls `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi` using the version in `plugin.audio.sendspin/docker_image_version.txt`.
 - The add-on mounts `/dev/snd` into the container and uses host networking.
 - The container stores its runtime configuration under the configured Docker config directory.
 
@@ -104,7 +104,8 @@ A helper script is available to package and publish the add-on:
 - `python scripts/release.py --check --token GITHUB_TOKEN` — Runs a comprehensive validation suite:
     - **Git Integrity**: Ensures the working tree is clean and synced with `origin/main`.
     - **Version Check**: Validates the `YYYY.Month.Patch` calendar versioning format.
-    - **Metadata Alignment**: Syncs versions across `addon.xml`, `pyproject.toml`, and `settings.xml`.
+    - **Metadata Alignment**: Syncs versions across `addon.xml` and `pyproject.toml`.
+    - **Docker Version Source**: Validates `plugin.audio.sendspin/docker_image_version.txt` exists and is readable.
     - **Remote Validation**: Verifies the release tag is available and the Docker image exists on GHCR (requires `GITHUB_TOKEN`).
     - **ZIP Layout**: Builds and verifies the final ZIP structure meets Kodi standards.
 - `python scripts/release.py --publish --token GITHUB_TOKEN` — Performs all checks and, if successful, creates a GitHub release and uploads the asset.

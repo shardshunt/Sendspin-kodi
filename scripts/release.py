@@ -77,26 +77,16 @@ def pyproject_version() -> str:
     return version
 
 
-def docker_image_versions() -> dict[str, str]:
+def docker_image_version() -> str:
+    version_file = ADDON_DIR / "docker_image_version.txt"
     try:
-        root = ET.parse(SETTINGS_XML).getroot()
-    except (ET.ParseError, OSError) as exc:
-        raise ReleaseError(f"Could not read {SETTINGS_XML.relative_to(ROOT)}: {exc}") from exc
+        version = version_file.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ReleaseError(f"Could not read {version_file.relative_to(ROOT)}: {exc}") from exc
 
-    versions = {}
-    for setting in root.findall(".//setting"):
-        if setting.attrib.get("id") != "docker_image_version":
-            continue
-
-        version = setting.attrib.get("default", "").strip()
-        if not version:
-            raise ReleaseError("docker_image_version setting is missing a default version")
-        versions[f"{SETTINGS_XML.relative_to(ROOT)} docker_image_version default"] = version
-
-    if not versions:
-        raise ReleaseError(f"{SETTINGS_XML.relative_to(ROOT)} is missing docker_image_version setting")
-
-    return versions
+    if not version:
+        raise ReleaseError(f"{version_file.relative_to(ROOT)} is empty")
+    return version
 
 
 def validate_versions() -> tuple[str, str, str, list[str]]:
@@ -117,13 +107,7 @@ def validate_versions() -> tuple[str, str, str, list[str]]:
         errors.append(str(exc))
 
     try:
-        image_versions = docker_image_versions()
-        distinct_versions = set(image_versions.values())
-        if len(distinct_versions) > 1:
-            details = ", ".join(f"{source} has {version}" for source, version in image_versions.items())
-            errors.append(f"Version mismatch: Docker image versions do not align: {details}")
-        if distinct_versions:
-            image_version = next(iter(distinct_versions))
+        image_version = docker_image_version()
     except ReleaseError as exc:
         errors.append(str(exc))
 

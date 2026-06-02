@@ -21,7 +21,7 @@ class SendspinServiceController:
             image_name=addon.getSetting("docker_image_name") or "ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi",
             container_name=addon.getSetting("docker_container_name") or "sendspin-player",
             config_dir=addon.getSetting("docker_config_dir") or "/storage/.config/sendspin",
-            image_version=addon.getSetting("docker_image_version"),
+            image_version=self._get_image_version(addon),
             volume_scale=self._get_volume_scale(addon),
             control_url=control_url,
         )
@@ -83,6 +83,29 @@ class SendspinServiceController:
             return 5000.0
 
         return delay
+
+    def _get_image_version(self, addon) -> str:
+        version_file = os.path.join(addon.getAddonInfo("path"), "docker_image_version.txt")
+        try:
+            with open(version_file, encoding="utf-8") as file:
+                image_version = file.read().strip()
+        except OSError as exc:
+            self.logger.warning(
+                "Could not read Docker image version file %s: %s; using untagged image",
+                version_file,
+                exc,
+            )
+            return ""
+
+        if image_version:
+            self.logger.info("Using Docker image version from %s: %s", version_file, image_version)
+            return image_version
+
+        self.logger.warning(
+            "Docker image version file %s is empty; using untagged image",
+            version_file,
+        )
+        return ""
 
     def _get_delay_ms(self, addon) -> float:
         fallback = 0.0
