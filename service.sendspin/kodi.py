@@ -12,25 +12,56 @@ class KodiManager:
         # No background tasks to clean up in script mode
         pass
 
-    def get_audio_output_device(self) -> str | None:
+    def get_setting_value(self, setting_name: str):
         query = {
             "jsonrpc": "2.0",
             "method": "Settings.GetSettingValue",
-            "params": {"setting": "audiooutput.audiodevice"},
+            "params": {"setting": setting_name},
             "id": 1,
         }
-        response = json.loads(xbmc.executeJSONRPC(json.dumps(query)))
-        return response.get("result", {}).get("value")
+        try:
+            response = json.loads(xbmc.executeJSONRPC(json.dumps(query)))
+            return response.get("result", {}).get("value")
+        except Exception as e:
+            self.logger.error(f"Failed to get setting {setting_name}: {e}")
+            return None
 
-    def set_audio_output_device(self, device_name: str) -> bool:
+    def set_setting_value(self, setting_name: str, value) -> bool:
         query = {
             "jsonrpc": "2.0",
             "method": "Settings.SetSettingValue",
-            "params": {"setting": "audiooutput.audiodevice", "value": device_name},
+            "params": {"setting": setting_name, "value": value},
             "id": 1,
         }
-        response = json.loads(xbmc.executeJSONRPC(json.dumps(query)))
-        return response.get("result")
+        try:
+            response = json.loads(xbmc.executeJSONRPC(json.dumps(query)))
+            return response.get("result") == "OK" or response.get("result") is True
+        except Exception as e:
+            self.logger.error(f"Failed to set setting {setting_name} to {value}: {e}")
+            return False
+
+    def get_audio_output_device(self) -> str | None:
+        return self.get_setting_value("audiooutput.audiodevice")
+
+    def get_audio_output_device_options(self) -> list[dict]:
+        query = {
+            "jsonrpc": "2.0",
+            "method": "Settings.GetSettings",
+            "params": {"level": "expert"},
+            "id": 1,
+        }
+        try:
+            response = json.loads(xbmc.executeJSONRPC(json.dumps(query)))
+            settings = response.get("result", {}).get("settings", [])
+            for setting in settings:
+                if setting.get("id") == "audiooutput.audiodevice":
+                    return setting.get("options", [])
+        except Exception as e:
+            self.logger.error(f"Failed to get audio output device options: {e}")
+        return []
+
+    def set_audio_output_device(self, device_name: str) -> bool:
+        return self.set_setting_value("audiooutput.audiodevice", device_name)
 
     def get_volume_state(self) -> dict[str, int | bool]:
         query = {

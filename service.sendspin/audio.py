@@ -278,20 +278,25 @@ class DockerPlaybackEngine:
             "/dev/snd:/dev/snd",
             "-v",
             f"{self.config_dir}:/root/.config/sendspin",
-            self.versioned_image_name,
-            "daemon",
-            "--audio-device",
-            self.audio_device,
-            "--hardware-volume",
-            "false",
-            "--control-api",
-            "true",
-            "--control-host",
-            control_host,
-            "--control-port",
-            control_port,
-            "--release-audio-on-start",
         ]
+
+        cmd.extend(
+            [
+                self.versioned_image_name,
+                "daemon",
+                "--audio-device",
+                self.audio_device,
+                "--hardware-volume",
+                "false",
+                "--control-api",
+                "true",
+                "--control-host",
+                control_host,
+                "--control-port",
+                control_port,
+                "--release-audio-on-start",
+            ]
+        )
 
         executable_command = shlex.join(cmd)
         self.logger.info(f"Executing Docker command: {executable_command}")

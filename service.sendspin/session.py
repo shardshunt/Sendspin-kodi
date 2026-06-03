@@ -96,6 +96,9 @@ async def run_session(controller: SendspinServiceController):
             log.info("Starting dummy playback track...")
             player.play(dummy_path, list_item)
             await asyncio.sleep(1.0)
+            # Route Kodi's playback stream to virtual null-sink to release physical audio hardware
+            await asyncio.get_running_loop().run_in_executor(None, controller.route_kodi_to_null_sink)
+            await asyncio.get_running_loop().run_in_executor(None, controller.suspend_physical_sinks, True)
             xbmc.executebuiltin("Dialog.Close(all, true)")
             if is_setting_enabled("activate_visualisation_enabled"):
                 xbmc.executebuiltin("ActivateWindow(visualisation)")
@@ -126,7 +129,12 @@ async def run_session(controller: SendspinServiceController):
             is_playing = audio_active or speed > 0.0
 
             # Sync playback and audio device state
-            is_kodi_playing = player.isPlaying()
+            is_kodi_playing = False
+            if player.isPlaying():
+                try:
+                    is_kodi_playing = "silent.mp3" in player.getPlayingFile()
+                except Exception as e:
+                    log.warning(f"Could not read playing file: {e}")
             is_kodi_paused = xbmc.getCondVisibility("Player.Paused") if is_kodi_playing else False
 
             if not has_track:
@@ -253,7 +261,7 @@ async def run_session(controller: SendspinServiceController):
                     last_seen_title = title
 
             # Handle seeking and duration sync
-            if has_track and playback_state and player.isPlaying():
+            if has_track and playback_state and is_kodi_playing:
                 position = playback_state.get("position", 0)
                 duration = playback_state.get("duration", 0)
 
@@ -266,7 +274,7 @@ async def run_session(controller: SendspinServiceController):
                     player.seekTime(position)
 
             # Dummy track EOF loop/rewind check
-            if player.isPlaying():
+            if is_kodi_playing:
                 try:
                     total_time = player.getTotalTime()
                     current_time = player.getTime()

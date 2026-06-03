@@ -138,6 +138,11 @@ class MockKodiPlayer:
     def isPlaying(self):
         return self._is_playing
 
+    def getPlayingFile(self):
+        if self.play_calls:
+            return self.play_calls[-1][0]
+        return ""
+
     def isPlayingVideo(self):
         return False
 
