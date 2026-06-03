@@ -18,10 +18,11 @@ class SendspinServiceController:
         self.logger = logging.getLogger("sendspin")
         addon = xbmcaddon.Addon()
         control_url = addon.getSetting("control_url") or self._control_url_from_port(addon)
+        config_dir = self._get_writable_config_dir(addon)
         self.playback_engine = DockerPlaybackEngine(
             image_name=addon.getSetting("docker_image_name") or "ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi",
             container_name=addon.getSetting("docker_container_name") or "sendspin-player",
-            config_dir=addon.getSetting("docker_config_dir") or "/storage/.config/sendspin",
+            config_dir=config_dir,
             image_version=self._get_image_version(addon),
             volume_scale=self._get_volume_scale(addon),
             control_url=control_url,
@@ -51,6 +52,51 @@ class SendspinServiceController:
     def _control_url_from_port(self, addon) -> str:
         port = addon.getSetting("proxy_port") or "59999"
         return f"http://127.0.0.1:{port}"
+
+    def _get_writable_config_dir(self, addon) -> str:
+        config_dir = addon.getSetting("docker_config_dir") or "/storage/.config/sendspin"
+
+        # Check if the directory (or its closest existing parent) is writable
+        is_writable = False
+        try:
+            test_dir = os.path.abspath(config_dir)
+            parent = test_dir
+            # Traverse up to find the first existing directory
+            while parent and parent != os.path.dirname(parent) and not os.path.exists(parent):
+                parent = os.path.dirname(parent)
+            if parent and os.path.exists(parent) and os.access(parent, os.W_OK):
+                is_writable = True
+        except Exception:
+            is_writable = False
+
+        if is_writable:
+            return config_dir
+
+        # Fallback to addon profile directory
+        profile_path = addon.getAddonInfo("profile")
+        if profile_path:
+            try:
+                real_profile = xbmcvfs.translatePath(profile_path)
+                if real_profile:
+                    fallback_dir = os.path.join(real_profile, "sendspin")
+                    self.logger.warning(
+                        "Configured Docker config directory '%s' is not writable or cannot be created. "
+                        "Falling back to profile directory: '%s'",
+                        config_dir,
+                        fallback_dir,
+                    )
+                    return fallback_dir
+            except Exception as e:
+                self.logger.warning("Failed to translate profile path '%s': %s", profile_path, e)
+
+        # Ultimate fallback to user home directory
+        fallback_dir = os.path.expanduser("~/.config/sendspin")
+        self.logger.warning(
+            "Configured Docker config directory '%s' is not writable. Falling back to user home: '%s'",
+            config_dir,
+            fallback_dir,
+        )
+        return fallback_dir
 
     def _get_volume_scale(self, addon) -> float:
         fallback = 0.3
