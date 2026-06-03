@@ -147,7 +147,10 @@ async def run_session(controller: SendspinServiceController):
                     if is_kodi_playing:
                         log.info("Sendspin idle: stopping dummy playback and releasing audio.")
                         controller.suppress_kodi_player_events()
-                        player.stop()
+                        try:
+                            player.stop()
+                        except Exception as e:
+                            log.warning(f"Could not stop player: {e}")
                     if audio_claimed:
                         controller.release_sendspin_audio_to_kodi()
                         audio_claimed = False
@@ -185,7 +188,10 @@ async def run_session(controller: SendspinServiceController):
                     if is_kodi_playing and is_kodi_paused:
                         log.info("Sendspin playing: resuming Kodi dummy playback.")
                         controller.suppress_kodi_player_events()
-                        player.pause()
+                        try:
+                            player.pause()
+                        except Exception as e:
+                            log.warning(f"Could not pause player: {e}")
                 else:
                     # State 2: Paused
                     if audio_claimed:
@@ -196,7 +202,10 @@ async def run_session(controller: SendspinServiceController):
                     if is_kodi_playing and not is_kodi_paused:
                         log.info("Sendspin paused: pausing Kodi dummy playback.")
                         controller.suppress_kodi_player_events()
-                        player.pause()
+                        try:
+                            player.pause()
+                        except Exception as e:
+                            log.warning(f"Could not pause player: {e}")
 
             # Handle volume sync
             if loop_time - last_volume_poll_time >= volume_poll_interval_seconds:
@@ -273,16 +282,19 @@ async def run_session(controller: SendspinServiceController):
 
             # Handle seeking and duration sync
             if has_track and playback_state and is_kodi_playing:
-                position = playback_state.get("position", 0)
-                duration = playback_state.get("duration", 0)
+                try:
+                    position = playback_state.get("position", 0)
+                    duration = playback_state.get("duration", 0)
 
-                if duration > 0 and duration != current_duration:
-                    player.getMusicInfoTag().setDuration(int(duration))
-                    current_duration = duration
+                    if duration > 0 and duration != current_duration:
+                        player.getMusicInfoTag().setDuration(int(duration))
+                        current_duration = duration
 
-                current_kodi_pos = player.getTime()
-                if abs(current_kodi_pos - position) > 1.0:
-                    player.seekTime(position)
+                    current_kodi_pos = player.getTime()
+                    if abs(current_kodi_pos - position) > 1.0:
+                        player.seekTime(position)
+                except Exception as e:
+                    log.warning(f"Could not sync playback position/duration: {e}")
 
             # Dummy track EOF loop/rewind check
             if is_kodi_playing:
