@@ -32,6 +32,7 @@ class SendspinServiceController:
         self.kodi = KodiManager()
         self.original_kodi_device = None
         self.original_streamsilence = None
+        self.original_default_sink = None
         self._suppress_kodi_player_events_until = 0.0
         self._last_applied_delay_ms = None
         self._profile_settings_missing_logged = False
@@ -419,6 +420,7 @@ class SendspinServiceController:
         self.logger.info(f"Captured original streamsilence: {self.original_streamsilence}")
         self.kodi.set_setting_value("audiooutput.streamsilence", 0)
         self.setup_pipewire_null_sink()
+        self.set_default_sink_to_null()
         self.suspend_physical_sinks(True)
 
         # Temporarily free Kodi's audio device so the Docker container can probe all devices (including busy ones)
@@ -545,6 +547,39 @@ class SendspinServiceController:
         except Exception as e:
             self.logger.warning(f"Failed to setup PipeWire null-sink: {e}")
 
+    def set_default_sink_to_null(self) -> None:
+        """Sets the default PipeWire/PulseAudio sink to the dummy virtual null-sink if pactl is available."""
+        import shutil
+
+        if not shutil.which("pactl"):
+            return
+
+        try:
+            res = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=5)
+            curr_sink = res.stdout.strip()
+            if curr_sink and curr_sink != "dummy_sink":
+                self.original_default_sink = curr_sink
+                self.logger.info(f"Captured original default sink: {self.original_default_sink}")
+
+            self.logger.info("Setting PipeWire/PulseAudio default sink to 'dummy_sink'...")
+            subprocess.run(["pactl", "set-default-sink", "dummy_sink"], timeout=5)
+        except Exception as e:
+            self.logger.warning(f"Failed to set default sink to null: {e}")
+
+    def restore_default_sink(self) -> None:
+        """Restores the default PipeWire/PulseAudio sink back to the original default sink if pactl is available."""
+        import shutil
+
+        if not shutil.which("pactl") or not self.original_default_sink:
+            return
+
+        try:
+            self.logger.info(f"Restoring default sink to: {self.original_default_sink}")
+            subprocess.run(["pactl", "set-default-sink", self.original_default_sink], timeout=5)
+            self.original_default_sink = None
+        except Exception as e:
+            self.logger.warning(f"Failed to restore default sink: {e}")
+
     def route_kodi_to_null_sink(self) -> None:
         """Routes Kodi's current audio stream input to the dummy null-sink if pactl is available."""
         import shutil
@@ -623,6 +658,7 @@ class SendspinServiceController:
         return False
 
     def restore_kodi_audio_device(self) -> bool:
+        self.restore_default_sink()
         self.suspend_physical_sinks(False)
         if self.original_streamsilence is not None:
             self.logger.info(f"Restoring keep-alive streamsilence setting to: {self.original_streamsilence}")
@@ -646,6 +682,7 @@ class SendspinServiceController:
                 self.original_streamsilence = self.kodi.get_setting_value("audiooutput.streamsilence")
                 self.kodi.set_setting_value("audiooutput.streamsilence", 0)
             self._switch_to_alternate()
+            self.set_default_sink_to_null()
             self.suspend_physical_sinks(True)
             time.sleep(3.0)  # Wait for Kodi to release the ALSA device and PipeWire to suspend
 
