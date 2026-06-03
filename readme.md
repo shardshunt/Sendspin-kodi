@@ -12,7 +12,14 @@ This addon was developed with the assistance of AI.
 
 ## Requirements
 
-- `docker` must be installed and available in the host system `$PATH`. (eg with the docker addon for LibreElec)
+- `docker` must be installed and available in the host system `$PATH` (e.g., with the docker addon for LibreELEC).
+- **For generic Linux hosts (Debian, Ubuntu, Linux Mint, etc.)**: The user running Kodi must have permission to execute Docker commands without `sudo`. This is done by adding the user to the `docker` group:
+  ```bash
+  sudo usermod -aG docker $USER
+  ```
+  *(Note: A reboot of the host computer or a full user logout/login is required after running this command for the group changes to take effect).*
+
+  This step is **not** needed on LibreELEC, as Kodi runs as `root` there by default.
 
 ## What it does
 
