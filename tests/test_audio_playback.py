@@ -122,6 +122,7 @@ class MockKodiPlayer:
         self._paused = False
         self.play_calls = []
         self.stop_calls = []
+        self.update_info_tag_calls = []
         self.tag = MockMusicInfoTag()
 
     def getMusicInfoTag(self):
@@ -130,6 +131,9 @@ class MockKodiPlayer:
     def play(self, item, listitem=None, windowed=False, startpos=-1):
         self._is_playing = True
         self.play_calls.append((item, listitem))
+
+    def updateInfoTag(self, listitem):
+        self.update_info_tag_calls.append(listitem)
 
     def stop(self):
         self._is_playing = False
@@ -236,35 +240,70 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": True},
             },
-            # Iteration 1: Playback starts (active playback, speed=1, track info present)
+            # Iteration 1: Playback starts but track info is not yet present (track: {}, speed=1)
+            {
+                "track": {},
+                "playback": {"speed": 1, "position": 0, "duration": 0},
+                "volume": {"volume": 30, "muted": False},
+                "audio": {"released": False},
+            },
+            # Iteration 2: Playback continues and track info arrives (active playback, speed=1)
             {
                 "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
                 "playback": {"speed": 1, "position": 2.0, "duration": 180},
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": False},
             },
-            # Iteration 2: Playback continues (active playback, same track, speed=1)
+            # Iteration 3: Playback continues (active playback, same track, speed=1)
             {
                 "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
                 "playback": {"speed": 1, "position": 10.0, "duration": 180},
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": False},
             },
-            # Iteration 3: Playback Paused (inactive playback, speed=0)
+            # Iteration 4: Playback Paused (inactive playback, speed=0)
             {
                 "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
                 "playback": {"speed": 0, "position": 10.0, "duration": 180},
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": True},
             },
-            # Iteration 4: Playback Resumed (active playback, speed=1)
+            # Iteration 5: Playback Resumed (active playback, speed=1)
             {
                 "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
                 "playback": {"speed": 1, "position": 15.0, "duration": 180},
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": False},
             },
-            # Iteration 5: Playback Stopped / Finished (no active playback, speed=0)
+            # Iteration 6: Playback Stopped / Finished (no active playback, speed=0) - Tick 1 of grace period
+            {
+                "track": {},
+                "playback": {"speed": 0, "position": 0, "duration": 0},
+                "volume": {"volume": 30, "muted": False},
+                "audio": {"released": True},
+            },
+            # Tick 2 of grace period
+            {
+                "track": {},
+                "playback": {"speed": 0, "position": 0, "duration": 0},
+                "volume": {"volume": 30, "muted": False},
+                "audio": {"released": True},
+            },
+            # Tick 3 of grace period
+            {
+                "track": {},
+                "playback": {"speed": 0, "position": 0, "duration": 0},
+                "volume": {"volume": 30, "muted": False},
+                "audio": {"released": True},
+            },
+            # Tick 4 of grace period
+            {
+                "track": {},
+                "playback": {"speed": 0, "position": 0, "duration": 0},
+                "volume": {"volume": 30, "muted": False},
+                "audio": {"released": True},
+            },
+            # Tick 5 of grace period - triggers cleanup and stop
             {
                 "track": {},
                 "playback": {"speed": 0, "position": 0, "duration": 0},
@@ -295,10 +334,10 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
                 self.count = 0
 
             def abortRequested(self):
-                # We have 6 states (indices 0 to 5).
-                # We want the loop to run 6 times, then abort.
+                # We have 11 states (indices 0 to 10).
+                # We want the loop to run 11 times, then abort.
                 print(f"[TEST RUN] Monitor abortRequested checked. count={self.count}")
-                if self.count >= 6:
+                if self.count >= 11:
                     return True
                 self.count += 1
                 return False
@@ -347,8 +386,10 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         )
 
         # 3. Verify Player operations:
-        # Dummy playback started on acquire_audio/playing transition (1 time) and track change detection (1 time)
-        self.assertEqual(len(player.play_calls), 2, "Expected player.play to be called twice")
+        # Dummy playback started on acquire_audio/playing transition (1 time)
+        self.assertEqual(len(player.play_calls), 1, "Expected player.play to be called once")
+        # Metadata updated on track change detection (1 time) via updateInfoTag
+        self.assertEqual(len(player.update_info_tag_calls), 1, "Expected player.updateInfoTag to be called once")
         # Dummy playback stopped on full stop (Iteration 5)
         self.assertEqual(
             len(player.stop_calls), 1, "Expected player.stop to be called once (only on full stop, not pause)"

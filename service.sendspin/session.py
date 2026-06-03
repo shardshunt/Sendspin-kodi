@@ -86,6 +86,7 @@ async def run_session(controller: SendspinServiceController):
         last_seen_title = None
         current_duration = 0
         audio_claimed = False
+        idle_ticks = 0
 
         list_item = xbmcgui.ListItem("Sendspin Active")
         music_tag = list_item.getMusicInfoTag()
@@ -137,16 +138,21 @@ async def run_session(controller: SendspinServiceController):
                     log.warning(f"Could not read playing file: {e}")
             is_kodi_paused = xbmc.getCondVisibility("Player.Paused") if is_kodi_playing else False
 
-            if not has_track:
-                # State 3: Stopped/Idle
-                if is_kodi_playing:
-                    log.info("Sendspin idle: stopping dummy playback and releasing audio.")
-                    controller.suppress_kodi_player_events()
-                    player.stop()
-                if audio_claimed:
-                    controller.release_sendspin_audio_to_kodi()
-                    audio_claimed = False
+            if not has_track and not is_playing:
+                idle_ticks += 1
+                if (
+                    idle_ticks >= 5
+                ):  # 2.5 seconds (5 ticks * 0.5s) grace period of continuous idle/trackless state before releasing audio
+                    # State 3: Stopped/Idle
+                    if is_kodi_playing:
+                        log.info("Sendspin idle: stopping dummy playback and releasing audio.")
+                        controller.suppress_kodi_player_events()
+                        player.stop()
+                    if audio_claimed:
+                        controller.release_sendspin_audio_to_kodi()
+                        audio_claimed = False
             else:
+                idle_ticks = 0
                 # State 1 or 2: Playing or Paused
                 if is_playing:
                     if not audio_claimed:
@@ -256,7 +262,12 @@ async def run_session(controller: SendspinServiceController):
                     if thumb:
                         list_item.setArt({"thumb": thumb})
 
-                    if is_playing:
+                    if is_playing and is_kodi_playing:
+                        try:
+                            player.updateInfoTag(list_item)
+                        except Exception as e:
+                            log.warning(f"Could not update playing info tag: {e}")
+                    elif is_playing:
                         await start_playback()
                     last_seen_title = title
 
