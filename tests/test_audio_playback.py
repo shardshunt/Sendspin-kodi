@@ -434,5 +434,65 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         print("[TEST HARNESS] All assertions passed successfully!")
 
 
+class TestAudioDeviceMapping(unittest.TestCase):
+    @patch("subprocess.run")
+    def test_get_audio_device_id(self, mock_run):
+        # Mock aplay -l output
+        mock_aplay_output = (
+            "**** List of PLAYBACK Hardware Devices ****\n"
+            "card 0: PCH [HDA Intel PCH], device 0: ALC3246 Analog [ALC3246 Analog]\n"
+            "  Subdevices: 1/1\n"
+            "  Subdevice #0: subdevice #0\n"
+            "card 0: PCH [HDA Intel PCH], device 3: HDMI 0 [HDMI 0]\n"
+            "  Subdevices: 1/1\n"
+            "  Subdevice #0: subdevice #0\n"
+            "card 0: PCH [HDA Intel PCH], device 7: HDMI 1 [HDMI 1]\n"
+            "  Subdevices: 1/1\n"
+            "  Subdevice #0: subdevice #0\n"
+            "card 0: PCH [HDA Intel PCH], device 8: HDMI 2 [HDMI 2]\n"
+            "  Subdevices: 1/1\n"
+            "  Subdevice #0: subdevice #0\n"
+        )
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = mock_aplay_output
+        mock_run.return_value = mock_res
+
+        with patch("xbmcaddon.Addon") as mock_addon_cls:
+            mock_addon = MagicMock()
+            mock_addon.getSetting.side_effect = lambda name: "8" if name == "fallback_audio_device" else ""
+            mock_addon_cls.return_value = mock_addon
+
+            from service import SendspinServiceController
+
+            controller = SendspinServiceController()
+
+            # Test various device strings
+            # 1. Default should map to 0 (first physical ALSA device index)
+            self.assertEqual(controller._get_audio_device_id("Default"), "0")
+            self.assertEqual(controller._get_audio_device_id("default"), "0")
+            self.assertEqual(controller._get_audio_device_id("PIPEWIRE:Default|Default Output Device (PIPEWIRE)"), "0")
+            self.assertEqual(controller._get_audio_device_id("ALSA:default"), "0")
+            self.assertEqual(controller._get_audio_device_id("ALSA:sysdefault"), "0")
+
+            # 2. Specific device matching by card and device
+            # ALSA:CARD=PCH,DEV=0 should map to the index in global list.
+            # global_device_list will be:
+            # 0: card 0, dev 0 -> index 0
+            # 1: card 0, dev 3 -> index 1
+            # 2: card 0, dev 7 -> index 2
+            # 3: card 0, dev 8 -> index 3
+            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=0"), "0")
+            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=3"), "1")
+            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=7"), "2")
+            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=8"), "3")
+
+            # 3. Fallback cases
+            # Invalid ALSA string without card/dev should return fallback (default fallback is "8")
+            self.assertEqual(controller._get_audio_device_id("ALSA:invalid"), "8")
+            # Non-default, non-ALSA string should return fallback
+            self.assertEqual(controller._get_audio_device_id("other_device"), "8")
+
+
 if __name__ == "__main__":
     unittest.main()

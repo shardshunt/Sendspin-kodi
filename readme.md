@@ -25,19 +25,25 @@ This addon was developed with the assistance of AI.
 ### Debian:
 *These steps are **not** needed on LibreELEC, as Kodi runs as `root` there by default and uses ALSA natively.*
 
-  1. The user running Kodi must have permission to execute Docker commands without `sudo`. This is done by adding the user to the `docker` group:
+  1. Install docker
+      ```bash
+      sudo apt install docker
+      ```
+
+  2. The user running Kodi must have permission to execute Docker commands without `sudo`. This is done by adding the user to the `docker` group:
      ```bash
      sudo usermod -aG docker $USER
+     sudo reboot
      ```
      *(Note: A reboot of the host computer or a full user logout/login is required after running this command for the group changes to take effect).*
 
-  2. Kodi must be configured to run with the `KODI_AE_SINK=ALSA` environment variable to ensure direct ALSA hardware access. To set this system-wide, add the variable to `/etc/environment`:
+  3. (Not always necissary) Kodi may need to be configured to run with the `KODI_AE_SINK=ALSA` environment variable to ensure direct ALSA hardware access. To set this system-wide, add the variable to `/etc/environment`:
      ```bash
      echo "KODI_AE_SINK=ALSA" | sudo tee -a /etc/environment
      ```
      *(Note: You will need to log out and back in, or reboot the machine, for this to take effect).*
 
-  3. Follow Steps 2-7 of the LibreElec Instructions
+  4. Follow Steps 2-7 of the LibreElec Instructions
 
 ## Usage
 

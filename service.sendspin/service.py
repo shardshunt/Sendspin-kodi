@@ -256,12 +256,15 @@ class SendspinServiceController:
         """Maps Kodi strings to ALSA indices by matching both hardware numbers and port labels."""
         fallback = xbmcaddon.Addon().getSetting("fallback_audio_device") or "0"
 
-        if not device_string or "ALSA:" not in device_string:
+        if not device_string:
             return fallback
 
         # Special fallback case for general default/sysdefault/pipewire/pulse devices
         clean_dev = device_string.strip().lower()
-        is_default = any(x in clean_dev for x in ["alsa:default", "alsa:sysdefault", "alsa:pipewire", "alsa:pulse"])
+        is_default = any(x in clean_dev for x in ["default", "sysdefault", "pipewire", "pulse"]) or (not clean_dev)
+
+        if not is_default and "alsa:" not in clean_dev:
+            return fallback
 
         # 1. Parse Kodi string (e.g., CARD=HDMI,DEV=4)
         card_match = re.search(r"CARD=([^,|]+)", device_string)
@@ -616,7 +619,7 @@ class SendspinServiceController:
             inputs = res.stdout.split("\n\n")
             kodi_input_id = None
             for inp in inputs:
-                if "kodi.bin" in inp:
+                if "kodi" in inp.lower():
                     match = re.search(r"Sink Input #(\d+)", inp)
                     if match:
                         kodi_input_id = match.group(1)
@@ -640,7 +643,7 @@ class SendspinServiceController:
             inputs = res.stdout.split("\n\n")
             kodi_input_id = None
             for inp in inputs:
-                if "kodi.bin" in inp:
+                if "kodi" in inp.lower():
                     match = re.search(r"Sink Input #(\d+)", inp)
                     if match:
                         kodi_input_id = match.group(1)
