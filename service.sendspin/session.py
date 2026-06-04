@@ -86,8 +86,10 @@ async def run_session(controller: SendspinServiceController):
         last_seen_title = None
         current_duration = 0
         audio_claimed = False
-        idle_ticks = 0
         paused_ticks = 0
+        user_released_audio = False
+        pending_reset_resume = False
+        reset_retry_count = 0
 
         list_item = xbmcgui.ListItem("Sendspin Active")
         music_tag = list_item.getMusicInfoTag()
@@ -130,6 +132,28 @@ async def run_session(controller: SendspinServiceController):
                 speed = 0.0
             is_playing = audio_active or speed > 0.0
 
+            if pending_reset_resume:
+                if is_playing:
+                    log.info("Stream successfully resumed after reset.")
+                    pending_reset_resume = False
+                    reset_retry_count = 0
+                elif audio_state.get("released", False):
+                    log.info("Audio released during reset period; canceling resume retry.")
+                    pending_reset_resume = False
+                    reset_retry_count = 0
+                else:
+                    reset_retry_count += 1
+                    if reset_retry_count <= 5:
+                        log.warning(
+                            f"Stream failed to resume after reset (attempt {reset_retry_count}/5). Retrying play..."
+                        )
+                        await asyncio.get_running_loop().run_in_executor(None, controller.send_play)
+                        is_playing = True
+                    else:
+                        log.error("Stream failed to resume after 5 attempts. Giving up.")
+                        pending_reset_resume = False
+                        reset_retry_count = 0
+
             # Sync playback and audio device state
             is_kodi_playing = False
             if player.isPlaying():
@@ -139,29 +163,24 @@ async def run_session(controller: SendspinServiceController):
                     log.warning(f"Could not read playing file: {e}")
             is_kodi_paused = xbmc.getCondVisibility("Player.Paused") if is_kodi_playing else False
 
-            if not has_track and not is_playing:
-                paused_ticks = 0
-                idle_ticks += 1
-                if (
-                    idle_ticks >= 5
-                ):  # 2.5 seconds (5 ticks * 0.5s) grace period of continuous idle/trackless state before releasing audio
-                    # State 3: Stopped/Idle
-                    if is_kodi_playing:
-                        log.info("Sendspin idle: stopping dummy playback and releasing audio.")
-                        controller.suppress_kodi_player_events()
-                        try:
-                            player.stop()
-                        except Exception as e:
-                            log.warning(f"Could not stop player: {e}")
-                    if audio_claimed:
-                        controller.release_sendspin_audio_to_kodi()
-                        audio_claimed = False
+            if is_kodi_playing:
+                user_released_audio = False
+
+            if not has_track and not is_playing and not audio_claimed:
+                # State 3: Stopped/Idle
+                user_released_audio = False
+                if is_kodi_playing:
+                    log.info("Sendspin idle: stopping dummy playback.")
+                    controller.suppress_kodi_player_events()
+                    try:
+                        player.stop()
+                    except Exception as e:
+                        log.warning(f"Could not stop player: {e}")
             else:
-                idle_ticks = 0
                 # State 1 or 2: Playing or Paused
                 if is_playing:
                     paused_ticks = 0
-                    if not audio_claimed:
+                    if not audio_claimed and not user_released_audio:
                         log.info("Sendspin playing: acquiring audio device.")
                         # Prepare Kodi's audio device (switch to alternate, suspend physical sinks, etc.)
                         await asyncio.get_running_loop().run_in_executor(
@@ -196,16 +215,18 @@ async def run_session(controller: SendspinServiceController):
                             controller.send_pause()
                             await asyncio.sleep(0.2)
                             controller.send_play()
+                            pending_reset_resume = True
+                            reset_retry_count = 0
                         else:
                             log.warning("Failed to acquire Sendspin audio device.")
 
                     if not is_kodi_playing:
                         if is_setting_enabled("require_dummy_playback") and was_audio_claimed_before:
-                            log.info("Dummy playback stopped by user; pausing Sendspin and releasing audio.")
-                            controller.send_pause()
+                            log.info("Dummy playback stopped by user; releasing audio.")
                             controller.release_sendspin_audio_to_kodi()
                             audio_claimed = False
-                        else:
+                            user_released_audio = True
+                        elif not user_released_audio:
                             log.info("Sendspin playing: starting dummy playback...")
                             await start_playback()
                             is_kodi_playing = True
@@ -220,6 +241,7 @@ async def run_session(controller: SendspinServiceController):
                             log.warning(f"Could not pause player: {e}")
                 else:
                     # State 2: Paused
+                    user_released_audio = False
                     if audio_claimed:
                         paused_ticks += 1
                         if (
@@ -298,6 +320,7 @@ async def run_session(controller: SendspinServiceController):
                     list_item.setInfo("music", {"title": title, "artist": artist, "album": album, "mediatype": "song"})
 
                     log.info(f"Track changed to: {tag.getArtist()} - {tag.getTitle()} ({tag.getAlbum()})")
+                    user_released_audio = False
 
                     thumb = track_info.get("artwork_url")
                     if thumb:

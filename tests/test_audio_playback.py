@@ -345,6 +345,13 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": True},
             },
+            # Iteration 16: Idle (with audio_claimed=False) -> triggers player.stop()
+            {
+                "track": {},
+                "playback": {"speed": 0, "position": 0, "duration": 0},
+                "volume": {"volume": 30, "muted": False},
+                "audio": {"released": True},
+            },
         ]
 
         state_iter = iter(states)
@@ -369,9 +376,9 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
                 self.count = 0
 
             def abortRequested(self):
-                # We have 16 states (indices 0 to 15).
+                # We have 17 states (indices 0 to 16).
                 print(f"[TEST RUN] Monitor abortRequested checked. count={self.count}")
-                if self.count >= 16:
+                if self.count >= 17:
                     return True
                 self.count += 1
                 return False
@@ -420,7 +427,7 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
             len(player.stop_calls), 1, "Expected player.stop to be called once (only on full stop, not pause)"
         )
 
-        # 4. Verify pause/play reset behavior:
+        # 4. Verify pause/play reset behavior (required on local audio acquisition to fetch FLAC headers):
         self.assertEqual(mock_client.pause.call_count, 2, "Expected pause to be called exactly twice")
         self.assertEqual(mock_client.play.call_count, 2, "Expected play to be called exactly twice")
 

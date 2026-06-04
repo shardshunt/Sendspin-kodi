@@ -477,7 +477,7 @@ class SendspinServiceController:
                 self.logger.warning("Sendspin control API did not become available during setup.")
         finally:
             # Restore original device after Docker has started/probed and server had time to connect/handshake
-            if switched_temp:
+            if switched_temp or self.original_default_sink is not None:
                 self.logger.info(
                     "Waiting for server connection and format probing before restoring Kodi audio device..."
                 )
@@ -570,12 +570,36 @@ class SendspinServiceController:
         """Restores the default PipeWire/PulseAudio sink back to the original default sink if pactl is available."""
         import shutil
 
-        if not shutil.which("pactl") or not self.original_default_sink:
+        if not shutil.which("pactl"):
+            return
+
+        target_sink = self.original_default_sink
+        if not target_sink:
+            try:
+                res = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=5)
+                if res.stdout.strip() == "dummy_sink":
+                    sinks_res = subprocess.run(
+                        ["pactl", "list", "short", "sinks"], capture_output=True, text=True, timeout=5
+                    )
+                    for line in sinks_res.stdout.splitlines():
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            sink_name = parts[1]
+                            if sink_name != "dummy_sink":
+                                target_sink = sink_name
+                                self.logger.info(
+                                    f"Self-healing: Found fallback physical sink to restore: {target_sink}"
+                                )
+                                break
+            except Exception as e:
+                self.logger.warning(f"Self-healing default sink detection failed: {e}")
+
+        if not target_sink:
             return
 
         try:
-            self.logger.info(f"Restoring default sink to: {self.original_default_sink}")
-            subprocess.run(["pactl", "set-default-sink", self.original_default_sink], timeout=5)
+            self.logger.info(f"Restoring default sink to: {target_sink}")
+            subprocess.run(["pactl", "set-default-sink", target_sink], timeout=5)
             self.original_default_sink = None
         except Exception as e:
             self.logger.warning(f"Failed to restore default sink: {e}")
