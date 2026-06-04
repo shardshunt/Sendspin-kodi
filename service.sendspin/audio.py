@@ -68,7 +68,16 @@ class DockerPlaybackEngine:
 
     def configure_volume_sync(self, volume, muted, delay_ms: float = 0.0):
         """Seed Sendspin daemon settings from Kodi before the container starts."""
-        os.makedirs(self.config_dir, exist_ok=True)
+        try:
+            os.makedirs(self.config_dir, exist_ok=True)
+        except OSError as exc:
+            self.logger.warning(
+                "Failed to create config directory %s: %s; falling back to ~/.config/sendspin",
+                self.config_dir,
+                exc,
+            )
+            self.config_dir = os.path.expanduser("~/.config/sendspin")
+            os.makedirs(self.config_dir, exist_ok=True)
         sendspin_volume = self.kodi_to_sendspin_volume(volume)
 
         try:
@@ -269,20 +278,25 @@ class DockerPlaybackEngine:
             "/dev/snd:/dev/snd",
             "-v",
             f"{self.config_dir}:/root/.config/sendspin",
-            self.versioned_image_name,
-            "daemon",
-            "--audio-device",
-            self.audio_device,
-            "--hardware-volume",
-            "false",
-            "--control-api",
-            "true",
-            "--control-host",
-            control_host,
-            "--control-port",
-            control_port,
-            "--release-audio-on-start",
         ]
+
+        cmd.extend(
+            [
+                self.versioned_image_name,
+                "daemon",
+                "--audio-device",
+                self.audio_device,
+                "--hardware-volume",
+                "false",
+                "--control-api",
+                "true",
+                "--control-host",
+                control_host,
+                "--control-port",
+                control_port,
+                "--release-audio-on-start",
+            ]
+        )
 
         executable_command = shlex.join(cmd)
         self.logger.info(f"Executing Docker command: {executable_command}")

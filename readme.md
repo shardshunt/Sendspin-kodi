@@ -10,9 +10,35 @@ This add-on is in an ALPHA state. It is experimental and may contain bugs or be 
 
 This addon was developed with the assistance of AI.
 
-## Requirements
+## Installation
 
-- `docker` must be installed and available in the host system `$PATH`. (eg with the docker addon for LibreElec)
+### LibreElec:
+
+  1. Install the docker addon for LibreELEC.
+  2. Dowload the latest service.sendspin.zip fron releases.
+  3. Open Kodi.
+  4. Go to **Settings** → **Add-ons**.
+  5. Choose **Install from zip file**.
+  6. Select `service.sendspin.zip` in the dowloaded location.
+  7. Upon first use the plugin will pull the docker image, this may take a while.
+
+### Debian:
+
+  1. The user running Kodi must have permission to execute Docker commands without `sudo`. This is done by adding the user to the `docker` group:
+     ```bash
+     sudo usermod -aG docker $USER
+     ```
+     *(Note: A reboot of the host computer or a full user logout/login is required after running this command for the group changes to take effect).*
+
+      *This step is **not** needed on LibreELEC, as Kodi runs as `root` there by default and uses ALSA natively.*
+
+  2. Kodi must be configured to run with the `KODI_AE_SINK=ALSA` environment variable to ensure direct ALSA hardware access. To set this system-wide, add the variable to `/etc/environment`:
+     ```bash
+     echo "KODI_AE_SINK=ALSA" | sudo tee -a /etc/environment
+     ```
+     *(Note: You will need to log out and back in, or reboot the machine, for this to take effect).*
+
+  3. Follow Steps 2-7 of the
 
 ## What it does
 
@@ -24,15 +50,6 @@ This addon was developed with the assistance of AI.
 - Uses the Sendspin control API to release the backend audio stream when playback is paused or idle so Kodi can reclaim the audio device immediately (e.g. for OSD navigation sounds or alternative local audio playback).
 - Automatically pulls the configured Docker image if it is missing locally.
 
-## Installation
-
-1. Dowload the latest service.sendspin.zip fron releases.
-2. Open Kodi.
-3. Go to **Settings** → **Add-ons**.
-4. Choose **Install from zip file**.
-5. Select the generated `service.sendspin.zip`.
-6. Wait for the installation to complete.
-
 ## Usage
 
 The service runs automatically in the background on Kodi startup. Playback is started and controlled remotely from your Sendspin server (e.g., Music Assistant), and Kodi automatically synchronises its active player state, metadata, OSD, and volume.
@@ -42,14 +59,16 @@ If the addon encounters issues, verify that your audio output settings and ALSA 
 
 ## Configuration
 
-Configure the add-on from Kodi settings. Current settings include:
+Note that Static Delay is set from the setting menu, change and apply the value for it to update:
+
+- `Static playback delay (ms)` – optional timing offset for playback.
+
+Current other settings include:
 
 - `Local proxy port` – local port for the control API (default `59999`).
 - `Container control API URL` – local control URL (`http://127.0.0.1:59999` by default).
-- `Static playback delay (ms)` – optional timing offset for playback.
 - `Docker container name` – default `sendspin-player`.
 - `Docker image name` – default `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi`.
-- Docker image tag is defined in `service.sendspin/docker_image_version.txt`.
 - `Docker config directory` – default `/storage/.config/sendspin`.
 - `Start Docker backend` – disable container startup for API-only or test runs.
 - `Audio device ID override` – force a specific ALSA device index.
@@ -59,6 +78,8 @@ Configure the add-on from Kodi settings. Current settings include:
 - `Activate visualisation window` – optionally show the visualisation UI.
 - `Stop when dummy playback stops` – whether the add-on shuts down when its dummy playback ends.
 
+*(Note: Docker image tag is defined in `service.sendspin/docker_image_version.txt`.)*
+
 ## Notes on implementation:
 
 The add-on supports both internal Kodi actions and the Sendspin control API.
@@ -66,13 +87,15 @@ The add-on supports both internal Kodi actions and the Sendspin control API.
 ### Audio Device Releasing and Reclaiming Lifecycle
 
 To avoid hardware contention and ALSA device locking issues, the service manages a seamless state loop:
-- **Pause/Stop**: When Sendspin transitions to a paused or idle state, the addon immediately releases the hardware audio device (e.g., HDMI 4) back to Kodi by restoring Kodi's original audio output device and triggering `release_audio` on the Sendspin daemon. The dummy Kodi player is kept in a paused state to preserve the Kodi OSD and playlist context.
+- **Pause**: When Sendspin transitions to a paused state, the addon immediately releases the hardware audio device (e.g., HDMI 4) back to Kodi by restoring Kodi's original audio output device and triggering `release_audio` on the Sendspin daemon. The dummy Kodi player is kept in a **paused** state to preserve the Kodi OSD and playlist context.
+- **Stop/Idle**: When Sendspin transitions to an idle state (no active playback and no track info), the addon observes a **2.5-second grace period** (to filter out temporary pauses during stream resets). If the idle state persists, it releases the hardware audio device and **stops** the dummy Kodi player.
 - **Play/Resume**: When Sendspin transitions to playing, the addon:
   1. Switches Kodi to a silent alternate candidate (e.g., `ALSA:default` or `ALSA:sysdefault`) to free the hardware device.
   2. Sleeps for 1.5 seconds to allow Kodi's audio engine (ActiveAE) to completely release the physical ALSA sound card.
   3. Calls `acquire_audio` on the Sendspin daemon.
   4. Sleeps for 0.5 seconds to let the daemon lock the hardware device.
   5. Triggers an unconditional stream reset (pause/play toggle) to force Music Assistant to send new FLAC headers, resolving silent playback caused by discarded stream headers.
+  6. Updates track metadata dynamically in Kodi's UI on the fly via `updateInfoTag` to prevent playback restarts and window focus loss.
 
 
 ### Local control API

@@ -18,10 +18,11 @@ class SendspinServiceController:
         self.logger = logging.getLogger("sendspin")
         addon = xbmcaddon.Addon()
         control_url = addon.getSetting("control_url") or self._control_url_from_port(addon)
+        config_dir = self._get_writable_config_dir(addon)
         self.playback_engine = DockerPlaybackEngine(
             image_name=addon.getSetting("docker_image_name") or "ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi",
             container_name=addon.getSetting("docker_container_name") or "sendspin-player",
-            config_dir=addon.getSetting("docker_config_dir") or "/storage/.config/sendspin",
+            config_dir=config_dir,
             image_version=self._get_image_version(addon),
             volume_scale=self._get_volume_scale(addon),
             control_url=control_url,
@@ -30,6 +31,8 @@ class SendspinServiceController:
         self.control = SendspinControlClient(control_url)
         self.kodi = KodiManager()
         self.original_kodi_device = None
+        self.original_streamsilence = None
+        self.original_default_sink = None
         self._suppress_kodi_player_events_until = 0.0
         self._last_applied_delay_ms = None
         self._profile_settings_missing_logged = False
@@ -51,6 +54,51 @@ class SendspinServiceController:
     def _control_url_from_port(self, addon) -> str:
         port = addon.getSetting("proxy_port") or "59999"
         return f"http://127.0.0.1:{port}"
+
+    def _get_writable_config_dir(self, addon) -> str:
+        config_dir = addon.getSetting("docker_config_dir") or "/storage/.config/sendspin"
+
+        # Check if the directory (or its closest existing parent) is writable
+        is_writable = False
+        try:
+            test_dir = os.path.abspath(config_dir)
+            parent = test_dir
+            # Traverse up to find the first existing directory
+            while parent and parent != os.path.dirname(parent) and not os.path.exists(parent):
+                parent = os.path.dirname(parent)
+            if parent and os.path.exists(parent) and os.access(parent, os.W_OK):
+                is_writable = True
+        except Exception:
+            is_writable = False
+
+        if is_writable:
+            return config_dir
+
+        # Fallback to addon profile directory
+        profile_path = addon.getAddonInfo("profile")
+        if profile_path:
+            try:
+                real_profile = xbmcvfs.translatePath(profile_path)
+                if real_profile:
+                    fallback_dir = os.path.join(real_profile, "sendspin")
+                    self.logger.warning(
+                        "Configured Docker config directory '%s' is not writable or cannot be created. "
+                        "Falling back to profile directory: '%s'",
+                        config_dir,
+                        fallback_dir,
+                    )
+                    return fallback_dir
+            except Exception as e:
+                self.logger.warning("Failed to translate profile path '%s': %s", profile_path, e)
+
+        # Ultimate fallback to user home directory
+        fallback_dir = os.path.expanduser("~/.config/sendspin")
+        self.logger.warning(
+            "Configured Docker config directory '%s' is not writable. Falling back to user home: '%s'",
+            config_dir,
+            fallback_dir,
+        )
+        return fallback_dir
 
     def _get_volume_scale(self, addon) -> float:
         fallback = 0.3
@@ -211,15 +259,19 @@ class SendspinServiceController:
         if not device_string or "ALSA:" not in device_string:
             return fallback
 
+        # Special fallback case for general default/sysdefault/pipewire/pulse devices
+        clean_dev = device_string.strip().lower()
+        is_default = any(x in clean_dev for x in ["alsa:default", "alsa:sysdefault", "alsa:pipewire", "alsa:pulse"])
+
         # 1. Parse Kodi string (e.g., CARD=HDMI,DEV=4)
         card_match = re.search(r"CARD=([^,|]+)", device_string)
         dev_match = re.search(r"DEV=(\d+)", device_string)
 
-        if not card_match or not dev_match:
+        if not is_default and (not card_match or not dev_match):
             return fallback
 
-        target_card_name = card_match.group(1).lower()
-        target_dev_num = int(dev_match.group(1))
+        target_card_name = card_match.group(1).lower() if card_match else None
+        target_dev_num = int(dev_match.group(1)) if dev_match else None
 
         try:
             # 2. Capture hardware state
@@ -246,6 +298,16 @@ class SendspinServiceController:
                         global_device_list.append(
                             {"card": card_idx, "device": int(dev_info.group(1)), "label": dev_info.group(2)}
                         )
+
+            # If it's a general default device, map to the first physical ALSA device (index 0)
+            if is_default:
+                if global_device_list:
+                    self.logger.info(
+                        "Kodi configured with default/sysdefault audio. "
+                        "Mapping to the first physical ALSA device: Index 0"
+                    )
+                    return "0"
+                return fallback
 
             # 3. Match the card
             matched_card_idx = None
@@ -302,9 +364,64 @@ class SendspinServiceController:
             self.logger.error(f"Robust mapping failed: {e}")
             return fallback
 
+    def is_kodi_holding_pcm(self) -> bool:
+        """Checks if kodi or kodi.bin process is currently holding any /dev/snd/pcm* device open."""
+        import glob
+        import os
+
+        pcm_devices = glob.glob("/dev/snd/pcmC*D*p")
+        if not pcm_devices:
+            return False
+
+        try:
+            for pid_dir in os.listdir("/proc"):
+                if not pid_dir.isdigit():
+                    continue
+                try:
+                    comm_path = os.path.join("/proc", pid_dir, "comm")
+                    if not os.path.exists(comm_path):
+                        continue
+                    with open(comm_path) as f:
+                        comm = f.read().strip().lower()
+
+                    if "kodi" not in comm:
+                        continue
+
+                    fd_dir = os.path.join("/proc", pid_dir, "fd")
+                    if not os.path.exists(fd_dir):
+                        continue
+                    for fd_name in os.listdir(fd_dir):
+                        try:
+                            link = os.readlink(os.path.join(fd_dir, fd_name))
+                            if any(dev in link for dev in pcm_devices):
+                                return True
+                        except (OSError, ValueError):
+                            continue
+                except (OSError, PermissionError):
+                    continue
+        except Exception as e:
+            self.logger.warning(f"Error checking if Kodi is holding PCM device: {e}")
+        return False
+
     async def setup(self) -> None:
         self.original_kodi_device = self.kodi.get_audio_output_device()
         self.logger.info(f"Captured original audio device: {self.original_kodi_device}")
+
+        # Check if the captured device is a software candidate (leftover from previous crash)
+        if self.original_kodi_device and any(x in self.original_kodi_device.lower() for x in ["pipewire", "pulse"]):
+            self.logger.warning(
+                f"Captured device '{self.original_kodi_device}' looks like a software fallback "
+                "left over from a previous unclean shutdown. Overriding original device to 'ALSA:default'."
+            )
+            self.original_kodi_device = "ALSA:default"
+
+        # Force keep-alive streamsilence to Off (0) to allow immediate release of the audio device
+        self.original_streamsilence = self.kodi.get_setting_value("audiooutput.streamsilence")
+        self.logger.info(f"Captured original streamsilence: {self.original_streamsilence}")
+        self.kodi.set_setting_value("audiooutput.streamsilence", 0)
+        self.setup_pipewire_null_sink()
+        self.set_default_sink_to_null()
+        self.suspend_physical_sinks(True)
 
         # Temporarily free Kodi's audio device so the Docker container can probe all devices (including busy ones)
         switched_temp = False
@@ -314,7 +431,18 @@ class SendspinServiceController:
             current_device = self.kodi.get_audio_output_device()
             if current_device != self.original_kodi_device:
                 switched_temp = True
-                await asyncio.sleep(1.5)  # Wait for Kodi to release the ALSA device
+                # Wait for Kodi to release the ALSA device and PipeWire to suspend
+                released = False
+                for _ in range(30):
+                    if not self.is_kodi_holding_pcm():
+                        released = True
+                        break
+                    await asyncio.sleep(0.5)
+                if released:
+                    self.logger.info("Verified Kodi has released the physical ALSA device.")
+                else:
+                    self.logger.warning("Timeout waiting for Kodi to release the physical ALSA device.")
+                await asyncio.sleep(1.0)  # Settle time
 
         kodi_volume = self.kodi.get_volume_state()
         addon = xbmcaddon.Addon()
@@ -349,7 +477,7 @@ class SendspinServiceController:
                 self.logger.warning("Sendspin control API did not become available during setup.")
         finally:
             # Restore original device after Docker has started/probed and server had time to connect/handshake
-            if switched_temp:
+            if switched_temp or self.original_default_sink is not None:
                 self.logger.info(
                     "Waiting for server connection and format probing before restoring Kodi audio device..."
                 )
@@ -358,13 +486,192 @@ class SendspinServiceController:
                 self.restore_kodi_audio_device()
 
     def _switch_to_alternate(self):
-        # Try common safe fallbacks
-        candidates = ["ALSA:default", "ALSA:sysdefault", "PULSE:default"]
+        if not self.original_kodi_device:
+            return False
+
+        options = self.kodi.get_audio_output_device_options()
+        if not options:
+            self.logger.warning("Could not retrieve audio output device options from Kodi; using static fallbacks.")
+            # Fall back to static candidates as a safety measure
+            candidates = ["ALSA:pipewire", "PULSE:default", "ALSA:sysdefault"]
+        else:
+            # Filter out the original device
+            available_alts = [
+                opt for opt in options if opt.get("value", "").lower() != self.original_kodi_device.lower()
+            ]
+
+            # Categorize candidates by priority
+            hdmi_candidates = []
+            software_candidates = []
+            other_candidates = []
+
+            for opt in available_alts:
+                val = opt.get("value", "")
+                lbl = opt.get("label", "").lower()
+                val_lower = val.lower()
+
+                if "hdmi" in val_lower or "hdmi" in lbl:
+                    hdmi_candidates.append(val)
+                elif any(x in val_lower or x in lbl for x in ["pipewire", "pulse"]):
+                    software_candidates.append(val)
+                elif not any(x in val_lower or x in lbl for x in ["analog", "default"]):
+                    other_candidates.append(val)
+                else:
+                    # Lowest priority: fallback ALSA devices like ALSA:default or Analog
+                    other_candidates.append(val)
+
+            candidates = software_candidates + hdmi_candidates + other_candidates
+
         for candidate in candidates:
-            if self.original_kodi_device and candidate.lower() != self.original_kodi_device.lower():
-                if self.kodi.set_audio_output_device(candidate):
-                    self.logger.info(f"Switched Kodi audio to {candidate} to free hardware.")
-                    break
+            if self.kodi.set_audio_output_device(candidate):
+                self.logger.info(
+                    f"Switched Kodi audio from {self.original_kodi_device} to {candidate} to free hardware."
+                )
+                return True
+
+        self.logger.error("Failed to switch Kodi to any alternate audio device.")
+        return False
+
+    def setup_pipewire_null_sink(self) -> None:
+        """Sets up a virtual null-sink in PipeWire/PulseAudio if pactl is available."""
+        import shutil
+
+        if not shutil.which("pactl"):
+            return
+
+        try:
+            res = subprocess.run(["pactl", "list", "short", "sinks"], capture_output=True, text=True, timeout=5)
+            if "dummy_sink" not in res.stdout:
+                self.logger.info("Loading virtual null-sink in PipeWire/PulseAudio...")
+                subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=dummy_sink"], timeout=5)
+        except Exception as e:
+            self.logger.warning(f"Failed to setup PipeWire null-sink: {e}")
+
+    def set_default_sink_to_null(self) -> None:
+        """Sets the default PipeWire/PulseAudio sink to the dummy virtual null-sink if pactl is available."""
+        import shutil
+
+        if not shutil.which("pactl"):
+            return
+
+        try:
+            res = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=5)
+            curr_sink = res.stdout.strip()
+            if curr_sink and curr_sink != "dummy_sink":
+                self.original_default_sink = curr_sink
+                self.logger.info(f"Captured original default sink: {self.original_default_sink}")
+
+            self.logger.info("Setting PipeWire/PulseAudio default sink to 'dummy_sink'...")
+            subprocess.run(["pactl", "set-default-sink", "dummy_sink"], timeout=5)
+        except Exception as e:
+            self.logger.warning(f"Failed to set default sink to null: {e}")
+
+    def restore_default_sink(self) -> None:
+        """Restores the default PipeWire/PulseAudio sink back to the original default sink if pactl is available."""
+        import shutil
+
+        if not shutil.which("pactl"):
+            return
+
+        target_sink = self.original_default_sink
+        if not target_sink:
+            try:
+                res = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=5)
+                if res.stdout.strip() == "dummy_sink":
+                    sinks_res = subprocess.run(
+                        ["pactl", "list", "short", "sinks"], capture_output=True, text=True, timeout=5
+                    )
+                    for line in sinks_res.stdout.splitlines():
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            sink_name = parts[1]
+                            if sink_name != "dummy_sink":
+                                target_sink = sink_name
+                                self.logger.info(
+                                    f"Self-healing: Found fallback physical sink to restore: {target_sink}"
+                                )
+                                break
+            except Exception as e:
+                self.logger.warning(f"Self-healing default sink detection failed: {e}")
+
+        if not target_sink:
+            return
+
+        try:
+            self.logger.info(f"Restoring default sink to: {target_sink}")
+            subprocess.run(["pactl", "set-default-sink", target_sink], timeout=5)
+            self.original_default_sink = None
+        except Exception as e:
+            self.logger.warning(f"Failed to restore default sink: {e}")
+
+    def route_kodi_to_null_sink(self) -> None:
+        """Routes Kodi's current audio stream input to the dummy null-sink if pactl is available."""
+        import shutil
+
+        if not shutil.which("pactl"):
+            return
+
+        try:
+            res = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True, timeout=5)
+            inputs = res.stdout.split("\n\n")
+            kodi_input_id = None
+            for inp in inputs:
+                if "kodi.bin" in inp:
+                    match = re.search(r"Sink Input #(\d+)", inp)
+                    if match:
+                        kodi_input_id = match.group(1)
+                        break
+
+            if kodi_input_id:
+                self.logger.info(f"Routing Kodi audio stream (ID {kodi_input_id}) to virtual null-sink...")
+                subprocess.run(["pactl", "move-sink-input", kodi_input_id, "dummy_sink"], timeout=5)
+        except Exception as e:
+            self.logger.warning(f"Failed to route Kodi stream to null sink: {e}")
+
+    def restore_kodi_stream_routing(self) -> None:
+        """Routes Kodi's current audio stream input back to the default sink if pactl is available."""
+        import shutil
+
+        if not shutil.which("pactl"):
+            return
+
+        try:
+            res = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True, timeout=5)
+            inputs = res.stdout.split("\n\n")
+            kodi_input_id = None
+            for inp in inputs:
+                if "kodi.bin" in inp:
+                    match = re.search(r"Sink Input #(\d+)", inp)
+                    if match:
+                        kodi_input_id = match.group(1)
+                        break
+
+            if kodi_input_id:
+                self.logger.info(f"Restoring Kodi audio stream (ID {kodi_input_id}) back to default sink...")
+                subprocess.run(["pactl", "move-sink-input", kodi_input_id, "@DEFAULT_SINK@"], timeout=5)
+        except Exception as e:
+            self.logger.warning(f"Failed to restore Kodi stream routing: {e}")
+
+    def suspend_physical_sinks(self, suspend: bool = True) -> None:
+        """Suspends or resumes all physical audio sinks on the host to immediately release/restore hardware access."""
+        import shutil
+
+        if not shutil.which("pactl"):
+            return
+
+        state_val = "1" if suspend else "0"
+        try:
+            res = subprocess.run(["pactl", "list", "short", "sinks"], capture_output=True, text=True, timeout=5)
+            lines = res.stdout.strip().split("\n")
+            for line in lines:
+                parts = line.split("\t")
+                if len(parts) >= 2:
+                    sink_name = parts[1]
+                    if sink_name != "dummy_sink":
+                        self.logger.info(f"Setting suspend state of sink '{sink_name}' to {state_val}...")
+                        subprocess.run(["pactl", "suspend-sink", sink_name, state_val], timeout=5)
+        except Exception as e:
+            self.logger.warning(f"Failed to manage physical sink suspend state: {e}")
 
     def wait_for_control_api(self, timeout_seconds: float = 20.0, interval_seconds: float = 0.5) -> bool:
         deadline = time.monotonic() + timeout_seconds
@@ -375,6 +682,13 @@ class SendspinServiceController:
         return False
 
     def restore_kodi_audio_device(self) -> bool:
+        self.restore_default_sink()
+        self.suspend_physical_sinks(False)
+        if self.original_streamsilence is not None:
+            self.logger.info(f"Restoring keep-alive streamsilence setting to: {self.original_streamsilence}")
+            self.kodi.set_setting_value("audiooutput.streamsilence", self.original_streamsilence)
+            self.original_streamsilence = None
+
         if not self.original_kodi_device:
             return False
         current_device = self.kodi.get_audio_output_device()
@@ -383,12 +697,18 @@ class SendspinServiceController:
         self.logger.info(f"Restoring Kodi audio device to: {self.original_kodi_device}")
         return bool(self.kodi.set_audio_output_device(self.original_kodi_device))
 
+    def prepare_kodi_audio_for_sendspin(self) -> None:
+        if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
+            if self.original_streamsilence is None:
+                self.original_streamsilence = self.kodi.get_setting_value("audiooutput.streamsilence")
+                self.kodi.set_setting_value("audiooutput.streamsilence", 0)
+            self._switch_to_alternate()
+            self.set_default_sink_to_null()
+            self.suspend_physical_sinks(True)
+
     def acquire_sendspin_audio(self) -> bool:
         if self._audio_claimed and not self.is_sendspin_audio_released():
             return True
-
-        if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
-            self._switch_to_alternate()
 
         success = self.control.acquire_audio()
         if success:
@@ -404,6 +724,7 @@ class SendspinServiceController:
         return success
 
     def release_sendspin_audio_to_kodi(self) -> bool:
+        self.restore_kodi_stream_routing()
         success = self.release_sendspin_audio()
         self.restore_kodi_audio_device()
         return success
