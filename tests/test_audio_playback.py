@@ -254,56 +254,91 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": False},
             },
-            # Iteration 3: Playback continues (active playback, same track, speed=1)
+            # Iteration 3: Brief pause tick 1 (speed=0) -> should NOT trigger release
             {
                 "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
-                "playback": {"speed": 1, "position": 10.0, "duration": 180},
+                "playback": {"speed": 0, "position": 2.0, "duration": 180},
+                "volume": {"volume": 30, "muted": False},
+                "audio": {"released": True},
+            },
+            # Iteration 4: Playback Resumed (speed=1) -> should NOT trigger acquire (already acquired)
+            {
+                "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
+                "playback": {"speed": 1, "position": 3.0, "duration": 180},
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": False},
             },
-            # Iteration 4: Playback Paused (inactive playback, speed=0)
+            # Iteration 5: Long pause tick 1 (speed=0)
             {
                 "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
-                "playback": {"speed": 0, "position": 10.0, "duration": 180},
+                "playback": {"speed": 0, "position": 3.0, "duration": 180},
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": True},
             },
-            # Iteration 5: Playback Resumed (active playback, speed=1)
+            # Iteration 6: Long pause tick 2
             {
                 "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
-                "playback": {"speed": 1, "position": 15.0, "duration": 180},
+                "playback": {"speed": 0, "position": 3.0, "duration": 180},
+                "volume": {"volume": 30, "muted": False},
+                "audio": {"released": True},
+            },
+            # Iteration 7: Long pause tick 3
+            {
+                "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
+                "playback": {"speed": 0, "position": 3.0, "duration": 180},
+                "volume": {"volume": 30, "muted": False},
+                "audio": {"released": True},
+            },
+            # Iteration 8: Long pause tick 4
+            {
+                "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
+                "playback": {"speed": 0, "position": 3.0, "duration": 180},
+                "volume": {"volume": 30, "muted": False},
+                "audio": {"released": True},
+            },
+            # Iteration 9: Long pause tick 5 -> triggers release
+            {
+                "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
+                "playback": {"speed": 0, "position": 3.0, "duration": 180},
+                "volume": {"volume": 30, "muted": False},
+                "audio": {"released": True},
+            },
+            # Iteration 10: Playback Resumed -> triggers acquire
+            {
+                "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
+                "playback": {"speed": 1, "position": 5.0, "duration": 180},
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": False},
             },
-            # Iteration 6: Playback Stopped / Finished (no active playback, speed=0) - Tick 1 of grace period
+            # Iteration 11: Playback Stopped / Finished - Tick 1 of grace period
             {
                 "track": {},
                 "playback": {"speed": 0, "position": 0, "duration": 0},
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": True},
             },
-            # Tick 2 of grace period
+            # Tick 2 of grace period (Iteration 12)
             {
                 "track": {},
                 "playback": {"speed": 0, "position": 0, "duration": 0},
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": True},
             },
-            # Tick 3 of grace period
+            # Tick 3 of grace period (Iteration 13)
             {
                 "track": {},
                 "playback": {"speed": 0, "position": 0, "duration": 0},
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": True},
             },
-            # Tick 4 of grace period
+            # Tick 4 of grace period (Iteration 14)
             {
                 "track": {},
                 "playback": {"speed": 0, "position": 0, "duration": 0},
                 "volume": {"volume": 30, "muted": False},
                 "audio": {"released": True},
             },
-            # Tick 5 of grace period - triggers cleanup and stop
+            # Tick 5 of grace period - triggers cleanup and stop (Iteration 15)
             {
                 "track": {},
                 "playback": {"speed": 0, "position": 0, "duration": 0},
@@ -334,10 +369,9 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
                 self.count = 0
 
             def abortRequested(self):
-                # We have 11 states (indices 0 to 10).
-                # We want the loop to run 11 times, then abort.
+                # We have 16 states (indices 0 to 15).
                 print(f"[TEST RUN] Monitor abortRequested checked. count={self.count}")
-                if self.count >= 11:
+                if self.count >= 16:
                     return True
                 self.count += 1
                 return False
@@ -371,29 +405,24 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
 
         # --- Assertions ---
 
-        # 1. Acquire audio: should be called twice (Iteration 1: start, Iteration 4: resume)
-        # Note: session.py calls controller.acquire_sendspin_audio(), which calls control.acquire_audio()
+        # 1. Acquire audio: should be called twice (Iteration 1: start, Iteration 10: resume after long pause)
         self.assertEqual(mock_client.acquire_audio.call_count, 2, "Expected acquire_audio to be called exactly twice")
 
-        # 2. Release audio: should be called at pause (Iteration 3), stop (Iteration 5), and cleanup (finally block)
-        # Let's count calls to control.release_audio()
-        # - Iteration 3 (Pause): release_audio is called inside loop.
-        # - Iteration 5 (Stop): release_audio is called inside loop.
-        # - Cleanup (finally): controller.cleanup() calls release_sendspin_audio_to_kodi() which calls release_audio.
-        # So we expect 3 calls.
+        # 2. Release audio: should be called at pause (Iteration 9), stop (Iteration 15), and cleanup (finally block)
         self.assertEqual(
             mock_client.release_audio.call_count, 3, "Expected release_audio to be called exactly three times"
         )
 
         # 3. Verify Player operations:
-        # Dummy playback started on acquire_audio/playing transition (1 time)
         self.assertEqual(len(player.play_calls), 1, "Expected player.play to be called once")
-        # Metadata updated on track change detection (1 time) via updateInfoTag
         self.assertEqual(len(player.update_info_tag_calls), 1, "Expected player.updateInfoTag to be called once")
-        # Dummy playback stopped on full stop (Iteration 5)
         self.assertEqual(
             len(player.stop_calls), 1, "Expected player.stop to be called once (only on full stop, not pause)"
         )
+
+        # 4. Verify pause/play reset behavior:
+        self.assertEqual(mock_client.pause.call_count, 2, "Expected pause to be called exactly twice")
+        self.assertEqual(mock_client.play.call_count, 2, "Expected play to be called exactly twice")
 
         print("[TEST HARNESS] All assertions passed successfully!")
 

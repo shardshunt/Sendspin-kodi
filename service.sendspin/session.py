@@ -87,6 +87,7 @@ async def run_session(controller: SendspinServiceController):
         current_duration = 0
         audio_claimed = False
         idle_ticks = 0
+        paused_ticks = 0
 
         list_item = xbmcgui.ListItem("Sendspin Active")
         music_tag = list_item.getMusicInfoTag()
@@ -139,6 +140,7 @@ async def run_session(controller: SendspinServiceController):
             is_kodi_paused = xbmc.getCondVisibility("Player.Paused") if is_kodi_playing else False
 
             if not has_track and not is_playing:
+                paused_ticks = 0
                 idle_ticks += 1
                 if (
                     idle_ticks >= 5
@@ -158,6 +160,7 @@ async def run_session(controller: SendspinServiceController):
                 idle_ticks = 0
                 # State 1 or 2: Playing or Paused
                 if is_playing:
+                    paused_ticks = 0
                     if not audio_claimed:
                         log.info("Sendspin playing: acquiring audio device.")
                         if controller.original_kodi_device and "alsa" in controller.original_kodi_device.lower():
@@ -195,9 +198,15 @@ async def run_session(controller: SendspinServiceController):
                 else:
                     # State 2: Paused
                     if audio_claimed:
-                        log.info("Sendspin paused: releasing audio device back to Kodi.")
-                        controller.release_sendspin_audio_to_kodi()
-                        audio_claimed = False
+                        paused_ticks += 1
+                        if (
+                            paused_ticks >= 5
+                        ):  # 2.5 seconds (5 ticks * 0.5s) grace period of continuous paused state before releasing audio
+                            log.info("Sendspin paused: releasing audio device back to Kodi.")
+                            controller.release_sendspin_audio_to_kodi()
+                            audio_claimed = False
+                    else:
+                        paused_ticks = 0
 
                     if is_kodi_playing and not is_kodi_paused:
                         log.info("Sendspin paused: pausing Kodi dummy playback.")
