@@ -163,15 +163,38 @@ async def run_session(controller: SendspinServiceController):
                     paused_ticks = 0
                     if not audio_claimed:
                         log.info("Sendspin playing: acquiring audio device.")
-                        if controller.original_kodi_device and "alsa" in controller.original_kodi_device.lower():
-                            controller._switch_to_alternate()
-                            await asyncio.sleep(1.5)  # Wait for Kodi to release the ALSA device
-                        if controller.acquire_sendspin_audio():
+                        # Prepare Kodi's audio device (switch to alternate, suspend physical sinks, etc.)
+                        await asyncio.get_running_loop().run_in_executor(
+                            None, controller.prepare_kodi_audio_for_sendspin
+                        )
+
+                        # Wait dynamically for Kodi to release the ALSA pcm device (up to 3.0s, polling every 100ms)
+                        # This uses is_kodi_holding_pcm to prevent arbitrary static sleeps.
+                        for attempt in range(30):
+                            is_holding = await asyncio.get_running_loop().run_in_executor(
+                                None, controller.is_kodi_holding_pcm
+                            )
+                            if not is_holding:
+                                log.info(f"Kodi released the ALSA device (detected after {attempt * 0.1:.1f}s).")
+                                break
+                            await asyncio.sleep(0.1)
+
+                        # Now try to acquire the Sendspin daemon audio output (with quick retry in case of minor settling delays)
+                        acquired = False
+                        for _ in range(15):
+                            if await asyncio.get_running_loop().run_in_executor(
+                                None, controller.acquire_sendspin_audio
+                            ):
+                                acquired = True
+                                break
+                            await asyncio.sleep(0.1)
+
+                        if acquired:
                             audio_claimed = True
-                            await asyncio.sleep(0.5)  # Give Docker a smidge to lock the hardware device
+                            await asyncio.sleep(0.2)  # Give Docker a brief moment to lock the hardware device
                             log.info("Playback active; resetting stream to get headers...")
                             controller.send_pause()
-                            await asyncio.sleep(0.3)
+                            await asyncio.sleep(0.2)
                             controller.send_play()
                         else:
                             log.warning("Failed to acquire Sendspin audio device.")

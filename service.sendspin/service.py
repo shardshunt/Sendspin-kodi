@@ -673,10 +673,7 @@ class SendspinServiceController:
         self.logger.info(f"Restoring Kodi audio device to: {self.original_kodi_device}")
         return bool(self.kodi.set_audio_output_device(self.original_kodi_device))
 
-    def acquire_sendspin_audio(self) -> bool:
-        if self._audio_claimed and not self.is_sendspin_audio_released():
-            return True
-
+    def prepare_kodi_audio_for_sendspin(self) -> None:
         if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
             if self.original_streamsilence is None:
                 self.original_streamsilence = self.kodi.get_setting_value("audiooutput.streamsilence")
@@ -684,7 +681,10 @@ class SendspinServiceController:
             self._switch_to_alternate()
             self.set_default_sink_to_null()
             self.suspend_physical_sinks(True)
-            time.sleep(3.0)  # Wait for Kodi to release the ALSA device and PipeWire to suspend
+
+    def acquire_sendspin_audio(self) -> bool:
+        if self._audio_claimed and not self.is_sendspin_audio_released():
+            return True
 
         success = self.control.acquire_audio()
         if success:
