@@ -488,6 +488,33 @@ class SendspinServiceController:
                 self.logger.info("Restoring original Kodi audio device after Docker startup...")
                 self.restore_kodi_audio_device()
 
+    async def restart_backend(self) -> None:
+        if not self.docker_start_enabled:
+            self.logger.info("Docker backend startup disabled; skipping backend restart.")
+            return
+
+        self.logger.info("Restarting Sendspin Docker backend on wake...")
+
+        # 1. Capture current Kodi state to write to daemon settings before starting
+        kodi_volume = self.kodi.get_volume_state()
+        addon = xbmcaddon.Addon()
+        delay_ms = self._get_delay_ms(addon)
+        self.playback_engine.configure_volume_sync(kodi_volume["volume"], kodi_volume["muted"], delay_ms)
+        self._last_applied_delay_ms = delay_ms
+
+        # 2. Stop and restart the container
+        # Run blocking/synchronous docker commands in an executor to avoid blocking the asyncio event loop
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.playback_engine.stop)
+        await loop.run_in_executor(None, self.playback_engine.start)
+
+        # 3. Wait for the API to become ready
+        api_ready = await loop.run_in_executor(None, self.wait_for_control_api)
+        if api_ready:
+            self.logger.info("Docker backend restarted successfully and control API is ready.")
+        else:
+            self.logger.warning("Sendspin control API did not become available after backend restart.")
+
     def _switch_to_alternate(self):
         if not self.original_kodi_device:
             return False

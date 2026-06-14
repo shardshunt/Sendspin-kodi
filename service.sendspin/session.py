@@ -64,6 +64,19 @@ def is_sendspin_active(track_info: dict, playback_state: dict, audio_state: dict
         return False
 
 
+class SendspinMonitor(xbmc.Monitor):
+    def __init__(self, controller: SendspinServiceController, log):
+        super().__init__()
+        self.controller = controller
+        self.log = log
+        self.wake_event_triggered = False
+
+    def onNotification(self, sender, method, data):  # noqa: N802 - Kodi callback name
+        if method == "System.OnWake":
+            self.log.info("System wake notification received.")
+            self.wake_event_triggered = True
+
+
 async def run_session(controller: SendspinServiceController):
     """Kodi service lifecycle that claims the audio device only while Sendspin is active."""
     log = logger.init_logger()
@@ -73,7 +86,7 @@ async def run_session(controller: SendspinServiceController):
         log.info("Initializing Docker backend...")
         await controller.setup()
 
-        monitor = xbmc.Monitor()
+        monitor = SendspinMonitor(controller, log)
         player = SendspinKodiPlayer(controller)
         dummy_path = os.path.join(ADDON_PATH, "resources", "silent.mp3")
 
@@ -110,6 +123,31 @@ async def run_session(controller: SendspinServiceController):
         log.info("Entering Sendspin service loop. Audio will be claimed on active playback.")
 
         while not monitor.abortRequested():
+            if monitor.wake_event_triggered:
+                monitor.wake_event_triggered = False
+                log.info("Processing wake event: restarting Sendspin backend...")
+                if audio_claimed:
+                    log.info("Releasing audio to Kodi before backend restart...")
+                    try:
+                        await asyncio.get_running_loop().run_in_executor(
+                            None, controller.release_sendspin_audio_to_kodi
+                        )
+                    except Exception as e:
+                        log.warning(f"Could not release audio on wake: {e}")
+                try:
+                    await controller.restart_backend()
+                except Exception as e:
+                    log.error(f"Failed to restart backend on wake: {e}")
+                # Reset all session states back to clean initial state
+                audio_claimed = False
+                user_released_audio = False
+                paused_ticks = 0
+                pending_reset_resume = False
+                reset_retry_count = 0
+                last_seen_sendspin_volume_state = None
+                last_seen_title = None
+                current_duration = 0
+
             was_audio_claimed_before = audio_claimed
             loop_time = asyncio.get_running_loop().time()
             sendspin_state = await asyncio.get_running_loop().run_in_executor(None, controller.get_sendspin_state)

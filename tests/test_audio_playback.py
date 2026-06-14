@@ -183,15 +183,17 @@ class MockDockerPlaybackEngine:
     def __init__(self, *args, **kwargs):
         self.volume_scale = 0.3
         self.audio_device = "0"
+        self.start_count = 0
+        self.stop_count = 0
 
     def configure_volume_sync(self, volume, muted, delay_ms):
         pass
 
     def start(self):
-        pass
+        self.start_count += 1
 
     def stop(self):
-        pass
+        self.stop_count += 1
 
     def kodi_to_sendspin_volume(self, volume):
         return int(volume * 0.3)
@@ -374,10 +376,14 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         class MockMonitor:
             def __init__(self):
                 self.count = 0
+                self.wake_event_triggered = False
 
             def abortRequested(self):
                 # We have 17 states (indices 0 to 16).
                 print(f"[TEST RUN] Monitor abortRequested checked. count={self.count}")
+                # Trigger a wake event at iteration 5 to verify the restart backend path
+                if self.count == 5:
+                    self.wake_event_triggered = True
                 if self.count >= 17:
                     return True
                 self.count += 1
@@ -387,8 +393,14 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         mock_monitor_instance = MockMonitor()
         mock_xbmc.Monitor.side_effect = lambda: mock_monitor_instance
 
+        # Patch SendspinMonitor in session to return our mock monitor instance
+        monitor_patcher = patch("session.SendspinMonitor", return_value=mock_monitor_instance)
+        monitor_patcher.start()
+        self.addCleanup(monitor_patcher.stop)
+
         # Mock the KodiManager to prevent real JSONRPC queries in tests
         controller = SendspinServiceController()
+        controller.docker_start_enabled = True  # Enable docker start for this test to verify the container restart path
         controller.kodi = MagicMock()
         from unittest.mock import AsyncMock
 
@@ -430,6 +442,16 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         # 4. Verify pause/play reset behavior (required on local audio acquisition to fetch FLAC headers):
         self.assertEqual(mock_client.pause.call_count, 2, "Expected pause to be called exactly twice")
         self.assertEqual(mock_client.play.call_count, 2, "Expected play to be called exactly twice")
+
+        # 5. Verify backend restart on wake:
+        # 1 start during setup, 1 start during wake = 2 starts.
+        self.assertEqual(
+            controller.playback_engine.start_count, 2, "Expected docker container to start twice (setup + wake)"
+        )
+        # 1 stop during wake, 1 stop during cleanup = 2 stops.
+        self.assertEqual(
+            controller.playback_engine.stop_count, 2, "Expected docker container to stop twice (wake + cleanup)"
+        )
 
         print("[TEST HARNESS] All assertions passed successfully!")
 

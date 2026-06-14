@@ -228,6 +228,16 @@ class DockerPlaybackEngine:
     def start(self):
         if not shutil.which("docker"):
             self.logger.error("Docker not found in PATH.")
+            if xbmcgui is not None:
+                try:
+                    dialog = xbmcgui.Dialog()
+                    dialog.ok(
+                        "Sendspin - Docker Error",
+                        "Docker binary was not found in PATH.\n"
+                        "Please install Docker and ensure the kodi user has permission to run it.",
+                    )
+                except Exception as e:
+                    self.logger.error("Failed to show Docker missing dialog: %s", e)
             return
 
         # Ensure image is ready before proceeding
@@ -310,6 +320,9 @@ class DockerPlaybackEngine:
             self.logger.error(f"Docker failed to start! Error: {result.stderr.strip()}")
 
     def stop(self):
+        if not shutil.which("docker"):
+            return
+
         if self.log_process:
             try:
                 self.log_process.terminate()
