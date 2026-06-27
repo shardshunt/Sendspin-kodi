@@ -256,12 +256,15 @@ class SendspinServiceController:
         """Maps Kodi strings to ALSA indices by matching both hardware numbers and port labels."""
         fallback = xbmcaddon.Addon().getSetting("fallback_audio_device") or "0"
 
-        if not device_string or "ALSA:" not in device_string:
+        if not device_string:
             return fallback
 
         # Special fallback case for general default/sysdefault/pipewire/pulse devices
         clean_dev = device_string.strip().lower()
-        is_default = any(x in clean_dev for x in ["alsa:default", "alsa:sysdefault", "alsa:pipewire", "alsa:pulse"])
+        is_default = any(x in clean_dev for x in ["default", "sysdefault", "pipewire", "pulse"]) or (not clean_dev)
+
+        if not is_default and "alsa:" not in clean_dev:
+            return fallback
 
         # 1. Parse Kodi string (e.g., CARD=HDMI,DEV=4)
         card_match = re.search(r"CARD=([^,|]+)", device_string)
@@ -485,6 +488,33 @@ class SendspinServiceController:
                 self.logger.info("Restoring original Kodi audio device after Docker startup...")
                 self.restore_kodi_audio_device()
 
+    async def restart_backend(self) -> None:
+        if not self.docker_start_enabled:
+            self.logger.info("Docker backend startup disabled; skipping backend restart.")
+            return
+
+        self.logger.info("Restarting Sendspin Docker backend on wake...")
+
+        # 1. Capture current Kodi state to write to daemon settings before starting
+        kodi_volume = self.kodi.get_volume_state()
+        addon = xbmcaddon.Addon()
+        delay_ms = self._get_delay_ms(addon)
+        self.playback_engine.configure_volume_sync(kodi_volume["volume"], kodi_volume["muted"], delay_ms)
+        self._last_applied_delay_ms = delay_ms
+
+        # 2. Stop and restart the container
+        # Run blocking/synchronous docker commands in an executor to avoid blocking the asyncio event loop
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.playback_engine.stop)
+        await loop.run_in_executor(None, self.playback_engine.start)
+
+        # 3. Wait for the API to become ready
+        api_ready = await loop.run_in_executor(None, self.wait_for_control_api)
+        if api_ready:
+            self.logger.info("Docker backend restarted successfully and control API is ready.")
+        else:
+            self.logger.warning("Sendspin control API did not become available after backend restart.")
+
     def _switch_to_alternate(self):
         if not self.original_kodi_device:
             return False
@@ -616,7 +646,7 @@ class SendspinServiceController:
             inputs = res.stdout.split("\n\n")
             kodi_input_id = None
             for inp in inputs:
-                if "kodi.bin" in inp:
+                if "kodi" in inp.lower():
                     match = re.search(r"Sink Input #(\d+)", inp)
                     if match:
                         kodi_input_id = match.group(1)
@@ -640,7 +670,7 @@ class SendspinServiceController:
             inputs = res.stdout.split("\n\n")
             kodi_input_id = None
             for inp in inputs:
-                if "kodi.bin" in inp:
+                if "kodi" in inp.lower():
                     match = re.search(r"Sink Input #(\d+)", inp)
                     if match:
                         kodi_input_id = match.group(1)

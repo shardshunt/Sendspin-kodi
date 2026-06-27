@@ -183,15 +183,17 @@ class MockDockerPlaybackEngine:
     def __init__(self, *args, **kwargs):
         self.volume_scale = 0.3
         self.audio_device = "0"
+        self.start_count = 0
+        self.stop_count = 0
 
     def configure_volume_sync(self, volume, muted, delay_ms):
         pass
 
     def start(self):
-        pass
+        self.start_count += 1
 
     def stop(self):
-        pass
+        self.stop_count += 1
 
     def kodi_to_sendspin_volume(self, volume):
         return int(volume * 0.3)
@@ -374,10 +376,14 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         class MockMonitor:
             def __init__(self):
                 self.count = 0
+                self.wake_event_triggered = False
 
             def abortRequested(self):
                 # We have 17 states (indices 0 to 16).
                 print(f"[TEST RUN] Monitor abortRequested checked. count={self.count}")
+                # Trigger a wake event at iteration 5 to verify the restart backend path
+                if self.count == 5:
+                    self.wake_event_triggered = True
                 if self.count >= 17:
                     return True
                 self.count += 1
@@ -387,8 +393,14 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         mock_monitor_instance = MockMonitor()
         mock_xbmc.Monitor.side_effect = lambda: mock_monitor_instance
 
+        # Patch SendspinMonitor in session to return our mock monitor instance
+        monitor_patcher = patch("session.SendspinMonitor", return_value=mock_monitor_instance)
+        monitor_patcher.start()
+        self.addCleanup(monitor_patcher.stop)
+
         # Mock the KodiManager to prevent real JSONRPC queries in tests
         controller = SendspinServiceController()
+        controller.docker_start_enabled = True  # Enable docker start for this test to verify the container restart path
         controller.kodi = MagicMock()
         from unittest.mock import AsyncMock
 
@@ -431,7 +443,77 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_client.pause.call_count, 2, "Expected pause to be called exactly twice")
         self.assertEqual(mock_client.play.call_count, 2, "Expected play to be called exactly twice")
 
+        # 5. Verify backend restart on wake:
+        # 1 start during setup, 1 start during wake = 2 starts.
+        self.assertEqual(
+            controller.playback_engine.start_count, 2, "Expected docker container to start twice (setup + wake)"
+        )
+        # 1 stop during wake, 1 stop during cleanup = 2 stops.
+        self.assertEqual(
+            controller.playback_engine.stop_count, 2, "Expected docker container to stop twice (wake + cleanup)"
+        )
+
         print("[TEST HARNESS] All assertions passed successfully!")
+
+
+class TestAudioDeviceMapping(unittest.TestCase):
+    @patch("subprocess.run")
+    def test_get_audio_device_id(self, mock_run):
+        # Mock aplay -l output
+        mock_aplay_output = (
+            "**** List of PLAYBACK Hardware Devices ****\n"
+            "card 0: PCH [HDA Intel PCH], device 0: ALC3246 Analog [ALC3246 Analog]\n"
+            "  Subdevices: 1/1\n"
+            "  Subdevice #0: subdevice #0\n"
+            "card 0: PCH [HDA Intel PCH], device 3: HDMI 0 [HDMI 0]\n"
+            "  Subdevices: 1/1\n"
+            "  Subdevice #0: subdevice #0\n"
+            "card 0: PCH [HDA Intel PCH], device 7: HDMI 1 [HDMI 1]\n"
+            "  Subdevices: 1/1\n"
+            "  Subdevice #0: subdevice #0\n"
+            "card 0: PCH [HDA Intel PCH], device 8: HDMI 2 [HDMI 2]\n"
+            "  Subdevices: 1/1\n"
+            "  Subdevice #0: subdevice #0\n"
+        )
+        mock_res = MagicMock()
+        mock_res.returncode = 0
+        mock_res.stdout = mock_aplay_output
+        mock_run.return_value = mock_res
+
+        with patch("xbmcaddon.Addon") as mock_addon_cls:
+            mock_addon = MagicMock()
+            mock_addon.getSetting.side_effect = lambda name: "8" if name == "fallback_audio_device" else ""
+            mock_addon_cls.return_value = mock_addon
+
+            from service import SendspinServiceController
+
+            controller = SendspinServiceController()
+
+            # Test various device strings
+            # 1. Default should map to 0 (first physical ALSA device index)
+            self.assertEqual(controller._get_audio_device_id("Default"), "0")
+            self.assertEqual(controller._get_audio_device_id("default"), "0")
+            self.assertEqual(controller._get_audio_device_id("PIPEWIRE:Default|Default Output Device (PIPEWIRE)"), "0")
+            self.assertEqual(controller._get_audio_device_id("ALSA:default"), "0")
+            self.assertEqual(controller._get_audio_device_id("ALSA:sysdefault"), "0")
+
+            # 2. Specific device matching by card and device
+            # ALSA:CARD=PCH,DEV=0 should map to the index in global list.
+            # global_device_list will be:
+            # 0: card 0, dev 0 -> index 0
+            # 1: card 0, dev 3 -> index 1
+            # 2: card 0, dev 7 -> index 2
+            # 3: card 0, dev 8 -> index 3
+            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=0"), "0")
+            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=3"), "1")
+            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=7"), "2")
+            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=8"), "3")
+
+            # 3. Fallback cases
+            # Invalid ALSA string without card/dev should return fallback (default fallback is "8")
+            self.assertEqual(controller._get_audio_device_id("ALSA:invalid"), "8")
+            # Non-default, non-ALSA string should return fallback
+            self.assertEqual(controller._get_audio_device_id("other_device"), "8")
 
 
 if __name__ == "__main__":
