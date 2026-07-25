@@ -258,7 +258,7 @@ async def run_session(controller: SendspinServiceController):
                             log.info("Playback active; resetting stream to get headers...")
                             controller.suppress_kodi_player_events(3.0)
                             controller.send_pause()
-                            await asyncio.sleep(3)
+                            await asyncio.sleep(0.2)
                             controller.send_play()
                             pending_reset_resume = True
                             reset_retry_count = 0
@@ -392,7 +392,7 @@ async def run_session(controller: SendspinServiceController):
                         current_duration = duration
 
                     current_kodi_pos = player.getTime()
-                    if abs(current_kodi_pos - position) > 1.0:
+                    if abs(current_kodi_pos - position) > 2.0:
                         player.seekTime(position)
                 except Exception as e:
                     log.warning(f"Could not sync playback position/duration: {e}")

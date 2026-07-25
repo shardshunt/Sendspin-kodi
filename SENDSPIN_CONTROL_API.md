@@ -195,7 +195,7 @@ Fields:
 - `track.artwork_url`: optional artwork URL.
 - `playback.position`: current playback position in seconds.
 - `playback.duration`: current track duration in seconds.
-- `playback.speed`: `0` for paused, positive value for playing.
+- `playback.speed`: `0` for paused, `1000` for normal playback speed (integer multiplier scaled by 1000, e.g. 1000 = 1.0x speed).
 - `volume.volume`: current Sendspin volume, integer from `0` to `100`.
 - `volume.muted`: current mute state.
 - `audio.released`: whether the daemon has released the local audio output device.
