@@ -103,6 +103,7 @@ async def run_session(controller: SendspinServiceController):
         user_released_audio = False
         pending_reset_resume = False
         reset_retry_count = 0
+        reset_wait_ticks = 0
 
         list_item = xbmcgui.ListItem("Sendspin Active")
         music_tag = list_item.getMusicInfoTag()
@@ -144,6 +145,7 @@ async def run_session(controller: SendspinServiceController):
                 paused_ticks = 0
                 pending_reset_resume = False
                 reset_retry_count = 0
+                reset_wait_ticks = 0
                 last_seen_sendspin_volume_state = None
                 last_seen_title = None
                 current_duration = 0
@@ -171,15 +173,12 @@ async def run_session(controller: SendspinServiceController):
             is_playing = audio_active or speed > 0.0
 
             if pending_reset_resume:
-                if is_playing:
-                    log.info("Stream successfully resumed after reset.")
-                    pending_reset_resume = False
-                    reset_retry_count = 0
-                elif audio_state.get("released", False):
+                paused_ticks = 0
+                if audio_state.get("released", False):
                     log.info("Audio released during reset period; canceling resume retry.")
                     pending_reset_resume = False
                     reset_retry_count = 0
-                else:
+                elif not is_playing:
                     reset_retry_count += 1
                     if reset_retry_count <= 5:
                         log.warning(
@@ -189,6 +188,13 @@ async def run_session(controller: SendspinServiceController):
                         is_playing = True
                     else:
                         log.error("Stream failed to resume after 5 attempts. Giving up.")
+                        pending_reset_resume = False
+                        reset_retry_count = 0
+                else:
+                    if reset_wait_ticks > 0:
+                        reset_wait_ticks -= 1
+                    else:
+                        log.info("Stream successfully resumed after reset.")
                         pending_reset_resume = False
                         reset_retry_count = 0
 
@@ -250,11 +256,13 @@ async def run_session(controller: SendspinServiceController):
                             audio_claimed = True
                             await asyncio.sleep(0.2)  # Give Docker a brief moment to lock the hardware device
                             log.info("Playback active; resetting stream to get headers...")
+                            controller.suppress_kodi_player_events(3.0)
                             controller.send_pause()
-                            await asyncio.sleep(0.2)
+                            await asyncio.sleep(3)
                             controller.send_play()
                             pending_reset_resume = True
                             reset_retry_count = 0
+                            reset_wait_ticks = 1
                         else:
                             log.warning("Failed to acquire Sendspin audio device.")
 
