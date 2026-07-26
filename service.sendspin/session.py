@@ -267,13 +267,13 @@ async def run_session(controller: SendspinServiceController):
                             log.warning("Failed to acquire Sendspin audio device.")
 
                     if not is_kodi_playing:
-                        if is_setting_enabled("require_dummy_playback") and was_audio_claimed_before:
-                            log.info("Dummy playback stopped by user; releasing audio.")
+                        if not is_playing and is_setting_enabled("require_dummy_playback") and was_audio_claimed_before:
+                            log.info("Dummy playback stopped and Sendspin paused; releasing audio.")
                             controller.release_sendspin_audio_to_kodi()
                             audio_claimed = False
                             user_released_audio = True
                         elif not user_released_audio:
-                            log.info("Sendspin playing: starting dummy playback...")
+                            log.info("Sendspin playing but dummy playback inactive: restarting dummy playback...")
                             await start_playback()
                             is_kodi_playing = True
                             is_kodi_paused = False
