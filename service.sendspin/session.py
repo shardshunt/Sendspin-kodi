@@ -104,6 +104,9 @@ async def run_session(controller: SendspinServiceController):
         pending_reset_resume = False
         reset_retry_count = 0
         reset_wait_ticks = 0
+        connection_seen = False
+        connection_lost_since = None
+        connection_stale_grace_seconds = 15.0
 
         list_item = xbmcgui.ListItem("Sendspin Active")
         music_tag = list_item.getMusicInfoTag()
@@ -121,34 +124,49 @@ async def run_session(controller: SendspinServiceController):
             if is_setting_enabled("activate_visualisation_enabled"):
                 xbmc.executebuiltin("ActivateWindow(visualisation)")
 
+        async def recover_backend(reason: str):
+            nonlocal audio_claimed
+            nonlocal user_released_audio
+            nonlocal paused_ticks
+            nonlocal pending_reset_resume
+            nonlocal reset_retry_count
+            nonlocal reset_wait_ticks
+            nonlocal last_seen_sendspin_volume_state
+            nonlocal last_seen_title
+            nonlocal current_duration
+
+            log.warning("Recovering Sendspin backend (%s)...", reason)
+            if audio_claimed:
+                log.info("Releasing audio to Kodi before backend recovery...")
+                try:
+                    await asyncio.get_running_loop().run_in_executor(None, controller.release_sendspin_audio_to_kodi)
+                except Exception as e:
+                    log.warning(f"Could not release audio during backend recovery: {e}")
+
+            try:
+                await controller.restart_backend()
+            except Exception as e:
+                log.error(f"Failed to recover backend: {e}")
+
+            audio_claimed = False
+            user_released_audio = False
+            paused_ticks = 0
+            pending_reset_resume = False
+            reset_retry_count = 0
+            reset_wait_ticks = 0
+            last_seen_sendspin_volume_state = None
+            last_seen_title = None
+            current_duration = 0
+
         log.info("Entering Sendspin service loop. Audio will be claimed on active playback.")
 
         while not monitor.abortRequested():
             if monitor.wake_event_triggered:
                 monitor.wake_event_triggered = False
                 log.info("Processing wake event: restarting Sendspin backend...")
-                if audio_claimed:
-                    log.info("Releasing audio to Kodi before backend restart...")
-                    try:
-                        await asyncio.get_running_loop().run_in_executor(
-                            None, controller.release_sendspin_audio_to_kodi
-                        )
-                    except Exception as e:
-                        log.warning(f"Could not release audio on wake: {e}")
-                try:
-                    await controller.restart_backend()
-                except Exception as e:
-                    log.error(f"Failed to restart backend on wake: {e}")
-                # Reset all session states back to clean initial state
-                audio_claimed = False
-                user_released_audio = False
-                paused_ticks = 0
-                pending_reset_resume = False
-                reset_retry_count = 0
-                reset_wait_ticks = 0
-                last_seen_sendspin_volume_state = None
-                last_seen_title = None
-                current_duration = 0
+                await recover_backend("System.OnWake")
+                connection_seen = False
+                connection_lost_since = None
 
             was_audio_claimed_before = audio_claimed
             loop_time = asyncio.get_running_loop().time()
@@ -163,6 +181,21 @@ async def run_session(controller: SendspinServiceController):
                 playback_state = sendspin_state.get("playback") or {}
                 audio_state = sendspin_state.get("audio") or {}
                 sendspin_volume_state = get_state_volume(sendspin_state)
+
+                connection_state = sendspin_state.get("connection")
+                if isinstance(connection_state, dict) and isinstance(connection_state.get("connected"), bool):
+                    if connection_state["connected"]:
+                        connection_seen = True
+                        connection_lost_since = None
+                    elif connection_seen:
+                        if connection_lost_since is None:
+                            connection_lost_since = loop_time
+                            log.warning("Sendspin server connection is no longer active; starting stale-session timer.")
+                        elif loop_time - connection_lost_since >= connection_stale_grace_seconds:
+                            await recover_backend("stale Sendspin connection reported by control API")
+                            connection_seen = False
+                            connection_lost_since = None
+                            continue
 
             has_track = bool(track_info)
             audio_active = audio_state.get("stream_active", False)
