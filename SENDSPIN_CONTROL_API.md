@@ -180,6 +180,9 @@ Example response:
     "volume": 42,
     "muted": false
   },
+  "connection": {
+    "connected": true
+  },
   "audio": {
     "released": false,
     "stream_active": true
@@ -198,6 +201,7 @@ Fields:
 - `playback.speed`: `0` for paused, `1000` for normal playback speed (integer multiplier scaled by 1000, e.g. 1000 = 1.0x speed).
 - `volume.volume`: current Sendspin volume, integer from `0` to `100`.
 - `volume.muted`: current mute state.
+- `connection.connected`: whether the daemon currently has an active Sendspin server connection. This is independent of audio release and playback state.
 - `audio.released`: whether the daemon has released the local audio output device.
 - `audio.stream_active`: whether the daemon currently has an active local audio stream. If the daemon has released the audio device (`released: true`), `stream_active` immediately transitions to `true` when a new stream is received from the server (e.g., during play/resume events), which also sets `playback.speed` to `1000` (speed 1.0). This allows the connecting client to detect the incoming stream and invoke `acquire_audio` to reclaim the audio hardware.
 
@@ -208,6 +212,9 @@ During startup or idle states, `track`, `playback`, and `volume` may be empty ob
   "track": {},
   "playback": {},
   "volume": {},
+  "connection": {
+    "connected": false
+  },
   "audio": {
     "released": true,
     "stream_active": false
