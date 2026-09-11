@@ -377,6 +377,7 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.count = 0
                 self.wake_event_triggered = False
+                self.audio_device_setting_changed = False
 
             def abortRequested(self):
                 # We have 17 states (indices 0 to 16).
@@ -489,25 +490,39 @@ class TestAudioDeviceMapping(unittest.TestCase):
 
             controller = SendspinServiceController()
 
-            # Test various device strings
-            # 1. Default should map to 0 (first physical ALSA device index)
-            self.assertEqual(controller._get_audio_device_id("Default"), "0")
-            self.assertEqual(controller._get_audio_device_id("default"), "0")
-            self.assertEqual(controller._get_audio_device_id("PIPEWIRE:Default|Default Output Device (PIPEWIRE)"), "0")
-            self.assertEqual(controller._get_audio_device_id("ALSA:default"), "0")
-            self.assertEqual(controller._get_audio_device_id("ALSA:sysdefault"), "0")
+            # Test various device strings. An out-of-range fallback remains
+            # unchanged so existing installations retain their configured
+            # value until the hardware list is available.
+            self.assertEqual(controller._get_audio_device_id("Default"), "8")
+            self.assertEqual(controller._get_audio_device_id("default"), "8")
+            self.assertEqual(controller._get_audio_device_id("PIPEWIRE:Default|Default Output Device (PIPEWIRE)"), "8")
+            self.assertEqual(controller._get_audio_device_id("ALSA:default"), "8")
+            self.assertEqual(controller._get_audio_device_id("ALSA:sysdefault"), "8")
 
-            # 2. Specific device matching by card and device
-            # ALSA:CARD=PCH,DEV=0 should map to the index in global list.
-            # global_device_list will be:
-            # 0: card 0, dev 0 -> index 0
-            # 1: card 0, dev 3 -> index 1
-            # 2: card 0, dev 7 -> index 2
-            # 3: card 0, dev 8 -> index 3
-            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=0"), "0")
-            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=3"), "1")
-            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=7"), "2")
-            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=8"), "3")
+            # A numeric fallback is resolved to a stable raw ALSA identity
+            # when that position exists in the current hardware list.
+            mock_addon.getSetting.side_effect = lambda name: "1" if name == "fallback_audio_device" else ""
+            self.assertEqual(controller._get_audio_device_id("ALSA:default"), "hw:0,3")
+            mock_addon.getSetting.side_effect = lambda name: "8" if name == "fallback_audio_device" else ""
+
+            # 2. Specific device matching by card and device returns a stable
+            # raw ALSA identity rather than a reorderable global ordinal.
+            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=0"), "hw:0,0")
+            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=3"), "hw:0,3")
+            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=7"), "hw:0,7")
+            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=8"), "hw:0,8")
+
+            # The raw identity remains the same regardless of where the
+            # device appears in the global enumeration.
+            reordered = (
+                mock_aplay_output.replace(
+                    "card 0: PCH [HDA Intel PCH], device 0: ALC3246 Analog [ALC3246 Analog]\\n",
+                    "",
+                )
+                + "card 0: PCH [HDA Intel PCH], device 0: ALC3246 Analog [ALC3246 Analog]\\n"
+            )
+            mock_run.return_value.stdout = reordered
+            self.assertEqual(controller._get_audio_device_id("ALSA:CARD=PCH,DEV=3"), "hw:0,3")
 
             # 3. Fallback cases
             # Invalid ALSA string without card/dev should return fallback (default fallback is "8")

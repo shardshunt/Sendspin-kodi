@@ -70,11 +70,15 @@ class SendspinMonitor(xbmc.Monitor):
         self.controller = controller
         self.log = log
         self.wake_event_triggered = False
+        self.audio_device_setting_changed = False
 
     def onNotification(self, sender, method, data):  # noqa: N802 - Kodi callback name
         if method == "System.OnWake":
             self.log.info("System wake notification received.")
             self.wake_event_triggered = True
+
+    def onSettingsChanged(self):  # noqa: N802 - Kodi callback name
+        self.audio_device_setting_changed = True
 
 
 async def run_session(controller: SendspinServiceController):
@@ -158,9 +162,43 @@ async def run_session(controller: SendspinServiceController):
             last_seen_title = None
             current_duration = 0
 
+        async def handle_kodi_audio_device_change():
+            if not monitor.audio_device_setting_changed:
+                return False
+
+            monitor.audio_device_setting_changed = False
+            changed_device = await asyncio.get_running_loop().run_in_executor(
+                None, controller.get_user_audio_device_change
+            )
+            if changed_device is None:
+                return False
+
+            log.info("Kodi audio device changed in settings: %s", changed_device)
+            if audio_claimed:
+                log.info("Releasing Sendspin audio before applying Kodi audio device change.")
+                await asyncio.get_running_loop().run_in_executor(None, controller.release_sendspin_audio)
+
+            controller.update_sendspin_audio_device(changed_device)
+            try:
+                await controller.restart_backend()
+            except Exception as e:
+                log.error(f"Failed to restart backend after Kodi audio device change: {e}")
+
+            return True
+
         log.info("Entering Sendspin service loop. Audio will be claimed on active playback.")
 
         while not monitor.abortRequested():
+            if await handle_kodi_audio_device_change():
+                audio_claimed = False
+                user_released_audio = False
+                pending_reset_resume = False
+                reset_retry_count = 0
+                reset_wait_ticks = 0
+                last_seen_title = None
+                current_duration = 0
+                continue
+
             if monitor.wake_event_triggered:
                 monitor.wake_event_triggered = False
                 log.info("Processing wake event: restarting Sendspin backend...")

@@ -219,6 +219,23 @@ class DockerPlaybackEngine:
             return None
         return result.stdout.strip() or None
 
+    def _container_audio_device(self) -> str | None:
+        """Return the audio-device argument stored on an existing container."""
+        result = subprocess.run(
+            ["docker", "inspect", "-f", "{{json .Args}}", self.container_name],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+
+        try:
+            args = json.loads(result.stdout)
+            audio_device_index = args.index("--audio-device")
+            return str(args[audio_device_index + 1])
+        except (ValueError, IndexError, TypeError, json.JSONDecodeError):
+            return None
+
     def _start_log_stream(self) -> None:
         if self.log_thread is not None and self.log_thread.is_alive():
             return
@@ -246,12 +263,15 @@ class DockerPlaybackEngine:
 
         if self._container_exists():
             existing_image = self._container_image()
-            if existing_image == self.versioned_image_name:
+            existing_audio_device = self._container_audio_device()
+            requested_audio_device = str(self.audio_device)
+            if existing_image == self.versioned_image_name and existing_audio_device == requested_audio_device:
                 if self._container_is_running():
                     self.logger.info(
-                        "Reusing running Docker container %s with image %s",
+                        "Reusing running Docker container %s with image %s and audio device %s",
                         self.container_name,
                         self.versioned_image_name,
+                        requested_audio_device,
                     )
                     self._start_log_stream()
                     return
@@ -264,11 +284,15 @@ class DockerPlaybackEngine:
                     self.logger.error("Docker failed to start existing container: %s", result.stderr.strip())
                 return
 
+            reason = []
+            if existing_image != self.versioned_image_name:
+                reason.append(f"image changed from {existing_image} to {self.versioned_image_name}")
+            if existing_audio_device != requested_audio_device:
+                reason.append(f"audio device changed from {existing_audio_device} to {requested_audio_device}")
             self.logger.info(
-                "Recreating Docker container %s because image changed from %s to %s",
+                "Recreating Docker container %s because %s",
                 self.container_name,
-                existing_image,
-                self.versioned_image_name,
+                " and ".join(reason),
             )
             self.stop()
 
