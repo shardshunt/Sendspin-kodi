@@ -505,6 +505,13 @@ class SendspinServiceController:
 
             if self.wait_for_control_api():
                 self.logger.info("Docker backend started with release-audio-on-start; no manual release required.")
+            elif self.backend_needs_recovery():
+                self.logger.warning(
+                    "Sendspin control API did not become available during setup; restarting the Docker backend."
+                )
+                await asyncio.get_running_loop().run_in_executor(None, self.restart_backend)
+                if not self.wait_for_control_api(timeout_seconds=20.0):
+                    self.logger.warning("Sendspin backend remained unavailable after restart during setup.")
             else:
                 self.logger.warning("Sendspin control API did not become available during setup.")
         finally:
@@ -523,6 +530,15 @@ class SendspinServiceController:
             return
 
         self.logger.info("Restarting Sendspin Docker backend on wake...")
+
+        # Refresh the audio-device mapping before restarting so a newly launched container
+        # doesn't inherit a stale ALSA hw:<card>,<device> value from an earlier run.
+        current_kodi_device = self.kodi.get_audio_output_device() or self.original_kodi_device
+        if current_kodi_device:
+            self.original_kodi_device = current_kodi_device
+            refreshed_device = self.update_sendspin_audio_device(current_kodi_device)
+            self.playback_engine.audio_device = refreshed_device
+            self.logger.info("Refreshed Sendspin audio device for restart: %s", refreshed_device)
 
         # 1. Capture current Kodi state to write to daemon settings before starting
         kodi_volume = self.kodi.get_volume_state()
@@ -731,6 +747,45 @@ class SendspinServiceController:
                         subprocess.run(["pactl", "suspend-sink", sink_name, state_val], timeout=5)
         except Exception as e:
             self.logger.warning(f"Failed to manage physical sink suspend state: {e}")
+
+    def backend_needs_recovery(self) -> bool:
+        """Return true when the Docker backend or control API is no longer healthy."""
+        if not self.docker_start_enabled:
+            return False
+
+        try:
+            exists = self.playback_engine._container_exists()
+            running = self.playback_engine._container_is_running() if exists else False
+        except Exception as exc:  # pragma: no cover - defensive safety net
+            self.logger.warning("Could not inspect Sendspin Docker container health: %s", exc)
+            exists = False
+            running = False
+
+        try:
+            audio_status = self.control.audio_status()
+            state = self.control.get_state()
+        except Exception:
+            audio_status = None
+            state = None
+
+        api_healthy = isinstance(audio_status, dict) or isinstance(state, dict)
+        if api_healthy:
+            return False
+
+        if exists and not running:
+            self.logger.warning("Sendspin Docker container exists but is not running. Recovery required.")
+            return True
+
+        if running:
+            self.logger.warning(
+                "Sendspin control API is unreachable while the container is running. Recovery required."
+            )
+            return True
+
+        self.logger.warning(
+            "Sendspin backend is unavailable and no healthy control API is responding. Recovery required."
+        )
+        return True
 
     def wait_for_control_api(self, timeout_seconds: float = 20.0, interval_seconds: float = 0.5) -> bool:
         deadline = time.monotonic() + timeout_seconds
