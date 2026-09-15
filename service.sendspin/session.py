@@ -214,6 +214,13 @@ async def run_session(controller: SendspinServiceController):
             audio_state = {}
             sendspin_volume_state = None
 
+            if not sendspin_state and controller.backend_needs_recovery():
+                log.warning("Sendspin backend is unhealthy or unreachable; restarting Docker backend.")
+                await recover_backend("control API unavailable or backend exited")
+                connection_seen = False
+                connection_lost_since = None
+                continue
+
             if sendspin_state:
                 track_info = sendspin_state.get("track") or {}
                 playback_state = sendspin_state.get("playback") or {}

@@ -217,6 +217,17 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         mock_xbmc.log.reset_mock()
 
     @patch("service.SendspinControlClient")
+    def test_backend_requires_recovery_when_control_api_is_down(self, mock_client_class):
+        controller = SendspinServiceController()
+        controller.docker_start_enabled = True
+        controller.control.audio_status = MagicMock(return_value=None)
+        controller.control.get_state = MagicMock(return_value=None)
+        controller.playback_engine._container_is_running = MagicMock(return_value=False)
+        controller.playback_engine._container_exists = MagicMock(return_value=True)
+
+        self.assertTrue(controller.backend_needs_recovery())
+
+    @patch("service.SendspinControlClient")
     @patch("asyncio.sleep")
     async def test_audio_acquire_release_lifecycle(self, mock_sleep, mock_client_class):
         # Prevent actual sleeping in unit test to run instantly by using an async no-op function
