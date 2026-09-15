@@ -37,6 +37,7 @@ class SendspinServiceController:
         self._last_applied_delay_ms = None
         self._profile_settings_missing_logged = False
         self._audio_claimed = False
+        self._last_kodi_audio_device = None
 
         # Check for version mismatch due to stale persisted settings
         addon_version = addon.getAddonInfo("version")
@@ -213,6 +214,37 @@ class SendspinServiceController:
     def get_sendspin_state(self) -> dict | None:
         return self.control.get_state()
 
+    def get_user_audio_device_change(self) -> str | None:
+        """Return a user-selected Kodi audio device change, if any."""
+        current_device = self.kodi.get_audio_output_device()
+        if current_device == self._last_kodi_audio_device:
+            return None
+        self._last_kodi_audio_device = current_device
+        return current_device
+
+    def _set_kodi_audio_device(self, device_name: str) -> bool:
+        success = self.kodi.set_audio_output_device(device_name)
+        if success:
+            self._last_kodi_audio_device = device_name
+        return success
+
+    def update_sendspin_audio_device(self, device_string: str | None) -> str:
+        """Update the backend target after Kodi's audio output setting changes."""
+        self.original_kodi_device = device_string
+        addon = xbmcaddon.Addon()
+        override = addon.getSetting("audio_device_override")
+        if override:
+            audio_device_id = override
+        elif device_string:
+            audio_device_id = self._get_audio_device_id(device_string)
+        else:
+            audio_device_id = addon.getSetting("fallback_audio_device") or "0"
+
+        self.playback_engine.audio_device = audio_device_id
+        self._last_kodi_audio_device = device_string
+        self.logger.info("Updated Sendspin audio device: %s", audio_device_id)
+        return audio_device_id
+
     def get_delay_ms_setting(self) -> float:
         addon = xbmcaddon.Addon()
         profile_path = addon.getAddonInfo("profile")
@@ -302,14 +334,24 @@ class SendspinServiceController:
                             {"card": card_idx, "device": int(dev_info.group(1)), "label": dev_info.group(2)}
                         )
 
-            # If it's a general default device, map to the first physical ALSA device (index 0)
+            # If Kodi is using a generic/software device, use the configured
+            # fallback. Numeric fallbacks retain their legacy aplay ordering
+            # but are converted to a stable raw ALSA identity immediately.
             if is_default:
-                if global_device_list:
+                try:
+                    fallback_index = int(fallback)
+                except (TypeError, ValueError):
+                    fallback_index = -1
+
+                if 0 <= fallback_index < len(global_device_list):
+                    fallback_device = global_device_list[fallback_index]
                     self.logger.info(
-                        "Kodi configured with default/sysdefault audio. "
-                        "Mapping to the first physical ALSA device: Index 0"
+                        "Kodi configured with default/sysdefault audio. Mapping fallback %s to stable hw:%s,%s",
+                        fallback,
+                        fallback_device["card"],
+                        fallback_device["device"],
                     )
-                    return "0"
+                    return f"hw:{fallback_device['card']},{fallback_device['device']}"
                 return fallback
 
             # 3. Match the card
@@ -351,17 +393,12 @@ class SendspinServiceController:
                 self.logger.error(f"Device {target_dev_num} not found by index or label on Card {matched_card_idx}.")
                 return fallback
 
-            # 5. Calculate global sequential index for Docker
-            try:
-                # We need the index of the tuple in the full global list
-                docker_idx = next(
-                    i
-                    for i, d in enumerate(global_device_list)
-                    if d["card"] == matched_card_idx and d["device"] == final_device_idx
-                )
-                return str(docker_idx)
-            except StopIteration:
-                return fallback
+            # 5. Pass the hardware identity to Sendspin instead of a global
+            # ordinal. The set/order of PortAudio devices can change when an
+            # HDMI endpoint is re-enumerated (especially after a backend
+            # restart), while hw:<card>,<device> remains tied to the target
+            # ALSA PCM.
+            return f"hw:{matched_card_idx},{final_device_idx}"
 
         except Exception as e:
             self.logger.error(f"Robust mapping failed: {e}")
@@ -408,6 +445,7 @@ class SendspinServiceController:
 
     async def setup(self) -> None:
         self.original_kodi_device = self.kodi.get_audio_output_device()
+        self._last_kodi_audio_device = self.original_kodi_device
         self.logger.info(f"Captured original audio device: {self.original_kodi_device}")
 
         # Check if the captured device is a software candidate (leftover from previous crash)
@@ -454,17 +492,8 @@ class SendspinServiceController:
         self._last_applied_delay_ms = delay_ms
 
         # Extract audio device ID for Docker
-        override = xbmcaddon.Addon().getSetting("audio_device_override")
-        if override:
-            audio_device_id = override
-            self.logger.info(f"Using audio device override: {audio_device_id}")
-        elif self.original_kodi_device is not None:
-            audio_device_id = self._get_audio_device_id(self.original_kodi_device)
-            self.logger.info(f"Extracted audio device ID: {audio_device_id}")
-        else:
-            audio_device_id = xbmcaddon.Addon().getSetting("fallback_audio_device") or "0"
-            self.logger.warning(f"No original Kodi device found; using fallback: {audio_device_id}")
-        self.playback_engine.audio_device = audio_device_id
+        audio_device_id = self.update_sendspin_audio_device(self.original_kodi_device)
+        self.logger.info(f"Extracted audio device ID: {audio_device_id}")
 
         try:
             if self.docker_start_enabled:
@@ -553,7 +582,7 @@ class SendspinServiceController:
             candidates = software_candidates + hdmi_candidates + other_candidates
 
         for candidate in candidates:
-            if self.kodi.set_audio_output_device(candidate):
+            if self._set_kodi_audio_device(candidate):
                 self.logger.info(
                     f"Switched Kodi audio from {self.original_kodi_device} to {candidate} to free hardware."
                 )
@@ -725,7 +754,7 @@ class SendspinServiceController:
         if current_device == self.original_kodi_device:
             return True
         self.logger.info(f"Restoring Kodi audio device to: {self.original_kodi_device}")
-        return bool(self.kodi.set_audio_output_device(self.original_kodi_device))
+        return bool(self._set_kodi_audio_device(self.original_kodi_device))
 
     def prepare_kodi_audio_for_sendspin(self) -> None:
         if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():

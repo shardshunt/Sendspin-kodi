@@ -19,8 +19,8 @@
         <setting id="docker_image_name" type="text" label="Docker image name" default="ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi" advanced="true" />
         <setting id="docker_config_dir" type="text" label="Docker config directory" default="/storage/.config/sendspin" />
         <setting id="docker_start_enabled" type="bool" label="Start Docker backend" default="true" />
-        <setting id="audio_device_override" type="text" label="Audio device ID override (leave empty to auto-detect)" default="" advanced="true" />
-        <setting id="fallback_audio_device" type="text" label="Fallback audio device ID" default="8" />
+        <setting id="audio_device_override" type="text" label="Audio device override (e.g. hw:1,10; leave empty to auto-detect)" default="" advanced="true" />
+        <setting id="fallback_audio_device" type="text" label="Fallback audio device ID or ALSA name" default="8" />
         <setting id="instance_guard_enabled" type="bool" label="Enable multi-instance guard" default="true" />
         <setting id="activate_visualisation_enabled" type="bool" label="Activate visualisation window" default="true" />
         <setting id="require_dummy_playback" type="bool" label="Stop when dummy playback stops" default="true" />
