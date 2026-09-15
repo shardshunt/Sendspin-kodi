@@ -228,6 +228,28 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(controller.backend_needs_recovery())
 
     @patch("service.SendspinControlClient")
+    async def test_restart_backend_refreshes_audio_device_mapping(self, mock_client_class):
+        controller = SendspinServiceController()
+        controller.docker_start_enabled = True
+        controller.kodi = MagicMock()
+        controller.kodi.get_volume_state.return_value = {"volume": 72, "muted": False}
+        controller.kodi.get_audio_output_device.return_value = "ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI"
+        controller.control.audio_status.return_value = {"released": True}
+        controller.control.get_state.return_value = {"track": {}, "playback": {"speed": 0}, "audio": {"released": True}}
+        controller.playback_engine.start = MagicMock()
+        controller.playback_engine.stop = MagicMock()
+        controller.wait_for_control_api = MagicMock(return_value=True)
+        controller.update_sendspin_audio_device = MagicMock(return_value="hw:1,9")
+        controller.playback_engine.audio_device = "hw:1,10"
+
+        await controller.restart_backend()
+
+        controller.update_sendspin_audio_device.assert_called_once_with("ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI")
+        self.assertEqual(controller.playback_engine.audio_device, "hw:1,9")
+        controller.playback_engine.stop.assert_called_once()
+        controller.playback_engine.start.assert_called_once()
+
+    @patch("service.SendspinControlClient")
     @patch("asyncio.sleep")
     async def test_audio_acquire_release_lifecycle(self, mock_sleep, mock_client_class):
         # Prevent actual sleeping in unit test to run instantly by using an async no-op function

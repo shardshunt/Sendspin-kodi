@@ -531,6 +531,15 @@ class SendspinServiceController:
 
         self.logger.info("Restarting Sendspin Docker backend on wake...")
 
+        # Refresh the audio-device mapping before restarting so a newly launched container
+        # doesn't inherit a stale ALSA hw:<card>,<device> value from an earlier run.
+        current_kodi_device = self.kodi.get_audio_output_device() or self.original_kodi_device
+        if current_kodi_device:
+            self.original_kodi_device = current_kodi_device
+            refreshed_device = self.update_sendspin_audio_device(current_kodi_device)
+            self.playback_engine.audio_device = refreshed_device
+            self.logger.info("Refreshed Sendspin audio device for restart: %s", refreshed_device)
+
         # 1. Capture current Kodi state to write to daemon settings before starting
         kodi_volume = self.kodi.get_volume_state()
         addon = xbmcaddon.Addon()
