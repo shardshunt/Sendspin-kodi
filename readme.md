@@ -66,9 +66,9 @@ Current other settings include:
 - `Docker image name` – default `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi`.
 - `Docker config directory` – default `/storage/.config/sendspin`.
 - `Start Docker backend` – disable container startup for API-only or test runs.
-- `Audio device ID override` – force a specific ALSA device index.
+- `Audio device ID override` – force a specific Sendspin device, preferably as a stable raw ALSA name such as `hw:1,10`.
 - `Kodi to Sendspin volume scale` – scale factor for volume mapping.
-- `Fallback audio device ID` – used when device detection cannot resolve the current output.
+- `Fallback audio device ID or ALSA name` – used when device detection cannot resolve the current output.
 - `Enable multi-instance guard` – prevent multiple running instances.
 - `Activate visualisation window` – optionally show the visualisation UI.
 - `Stop when dummy playback stops` – whether the add-on shuts down when its dummy playback ends.
