@@ -547,18 +547,38 @@ class SendspinServiceController:
         self.playback_engine.configure_volume_sync(kodi_volume["volume"], kodi_volume["muted"], delay_ms)
         self._last_applied_delay_ms = delay_ms
 
-        # 2. Stop and restart the container
+        # 2. Release Kodi's hardware device before restarting the container
+        switched_temp = False
+        if current_kodi_device and "alsa" in current_kodi_device.lower():
+            self.logger.info("Temporarily freeing Kodi audio device before backend restart...")
+            self._switch_to_alternate()
+            if self.kodi.get_audio_output_device() != current_kodi_device:
+                switched_temp = True
+                for _ in range(30):
+                    if not self.is_kodi_holding_pcm():
+                        self.logger.info("Verified Kodi has released the physical ALSA device.")
+                        break
+                    await asyncio.sleep(0.5)
+                else:
+                    self.logger.warning("Timeout waiting for Kodi to release the physical ALSA device.")
+                await asyncio.sleep(1.0)
+
+        # 3. Stop and restart the container
         # Run blocking/synchronous docker commands in an executor to avoid blocking the asyncio event loop
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self.playback_engine.stop)
-        await loop.run_in_executor(None, self.playback_engine.start)
+        try:
+            await loop.run_in_executor(None, self.playback_engine.stop)
+            await loop.run_in_executor(None, self.playback_engine.start)
 
-        # 3. Wait for the API to become ready
-        api_ready = await loop.run_in_executor(None, self.wait_for_control_api)
-        if api_ready:
-            self.logger.info("Docker backend restarted successfully and control API is ready.")
-        else:
-            self.logger.warning("Sendspin control API did not become available after backend restart.")
+            # 4. Wait for the API to become ready
+            api_ready = await loop.run_in_executor(None, self.wait_for_control_api)
+            if api_ready:
+                self.logger.info("Docker backend restarted successfully and control API is ready.")
+            else:
+                self.logger.warning("Sendspin control API did not become available after backend restart.")
+        finally:
+            if switched_temp:
+                self.restore_kodi_audio_device()
 
     def _switch_to_alternate(self):
         if not self.original_kodi_device:

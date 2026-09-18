@@ -233,7 +233,10 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         controller.docker_start_enabled = True
         controller.kodi = MagicMock()
         controller.kodi.get_volume_state.return_value = {"volume": 72, "muted": False}
-        controller.kodi.get_audio_output_device.return_value = "ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI"
+        controller.kodi.get_audio_output_device.side_effect = [
+            "ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI",
+            "ALSA:pipewire",
+        ]
         controller.control.audio_status.return_value = {"released": True}
         controller.control.get_state.return_value = {"track": {}, "playback": {"speed": 0}, "audio": {"released": True}}
         controller.playback_engine.start = MagicMock()
@@ -241,13 +244,19 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         controller.wait_for_control_api = MagicMock(return_value=True)
         controller.update_sendspin_audio_device = MagicMock(return_value="hw:1,9")
         controller.playback_engine.audio_device = "hw:1,10"
+        controller._switch_to_alternate = MagicMock()
+        controller.is_kodi_holding_pcm = MagicMock(return_value=False)
+        controller.restore_kodi_audio_device = MagicMock()
 
         await controller.restart_backend()
 
         controller.update_sendspin_audio_device.assert_called_once_with("ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI")
         self.assertEqual(controller.playback_engine.audio_device, "hw:1,9")
+        controller._switch_to_alternate.assert_called_once_with()
+        controller.is_kodi_holding_pcm.assert_called_once_with()
         controller.playback_engine.stop.assert_called_once()
         controller.playback_engine.start.assert_called_once()
+        controller.restore_kodi_audio_device.assert_called_once_with()
 
     @patch("service.SendspinControlClient")
     @patch("asyncio.sleep")
