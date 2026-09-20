@@ -228,7 +228,8 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(controller.backend_needs_recovery())
 
     @patch("service.SendspinControlClient")
-    async def test_restart_backend_refreshes_audio_device_mapping(self, mock_client_class):
+    @patch("asyncio.sleep")
+    async def test_restart_backend_refreshes_audio_device_mapping(self, mock_sleep, mock_client_class):
         controller = SendspinServiceController()
         controller.docker_start_enabled = True
         controller.kodi = MagicMock()
@@ -257,6 +258,27 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         controller.playback_engine.stop.assert_called_once()
         controller.playback_engine.start.assert_called_once()
         controller.restore_kodi_audio_device.assert_called_once_with()
+
+    @patch("service.SendspinControlClient")
+    @patch("asyncio.sleep")
+    async def test_restart_backend_preserves_original_device_when_kodi_is_on_temporary_fallback(
+        self, mock_sleep, mock_client_class
+    ):
+        controller = SendspinServiceController()
+        controller.docker_start_enabled = True
+        controller.original_kodi_device = "ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI"
+        controller.kodi = MagicMock()
+        controller.kodi.get_audio_output_device.return_value = "ALSA:pipewire"
+        controller.kodi.get_volume_state.return_value = {"volume": 72, "muted": False}
+        controller.update_sendspin_audio_device = MagicMock(return_value="hw:1,9")
+        controller.playback_engine.start = MagicMock()
+        controller.playback_engine.stop = MagicMock()
+        controller.wait_for_control_api = MagicMock(return_value=True)
+
+        await controller.restart_backend()
+
+        self.assertEqual(controller.original_kodi_device, "ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI")
+        controller.update_sendspin_audio_device.assert_called_once_with("ALSA:pipewire")
 
     @patch("service.SendspinControlClient")
     @patch("asyncio.sleep")

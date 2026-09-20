@@ -533,10 +533,19 @@ class SendspinServiceController:
 
         # Refresh the audio-device mapping before restarting so a newly launched container
         # doesn't inherit a stale ALSA hw:<card>,<device> value from an earlier run.
-        current_kodi_device = self.kodi.get_audio_output_device() or self.original_kodi_device
+        configured_kodi_device = self.original_kodi_device
+        current_kodi_device = self.kodi.get_audio_output_device() or configured_kodi_device
+        restoring_temporary_device = (
+            configured_kodi_device
+            and current_kodi_device
+            and "alsa" in configured_kodi_device.lower()
+            and any(name in current_kodi_device.lower() for name in ("pipewire", "pulse"))
+        )
+        restore_device = configured_kodi_device if restoring_temporary_device else current_kodi_device
         if current_kodi_device:
-            self.original_kodi_device = current_kodi_device
             refreshed_device = self.update_sendspin_audio_device(current_kodi_device)
+            if restore_device:
+                self.original_kodi_device = restore_device
             self.playback_engine.audio_device = refreshed_device
             self.logger.info("Refreshed Sendspin audio device for restart: %s", refreshed_device)
 
@@ -578,6 +587,7 @@ class SendspinServiceController:
                 self.logger.warning("Sendspin control API did not become available after backend restart.")
         finally:
             if switched_temp:
+                await asyncio.sleep(8.0)
                 self.restore_kodi_audio_device()
 
     def _switch_to_alternate(self):
