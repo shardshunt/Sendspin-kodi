@@ -37,6 +37,7 @@ def handle_plugin_action(controller: SendspinServiceController) -> bool:
         "toggle_play_pause": controller.send_play_pause,
         "next": controller.send_next_track,
         "previous": controller.send_previous_track,
+        "pair_token": controller.show_pairing_token,
     }
     handler = actions.get(action)
     if handler is None:

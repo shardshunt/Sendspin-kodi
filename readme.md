@@ -2,7 +2,7 @@
 
 `service.sendspin` is being migrated from Docker-hosted playback to a native integration using the external [`sendspin-cpp`](https://github.com/Sendspin/sendspin-cpp) project.
 
-This branch has removed Docker backend startup, but the native backend is not integrated yet. Playback is therefore unavailable in this intermediate state; do not package or deploy this branch for normal use until the C++ backend phase is complete.
+This branch contains an experimental native process and Kodi supervisor, but the executable is not included in the add-on ZIP, server discovery and device selection are incomplete, and real playback has not been validated. Do not package or deploy this branch for normal use yet.
 ## Disclaimer
 
 This add-on is in an ALPHA state. It is experimental and may contain bugs or be unstable. Use it at your own risk.
@@ -13,9 +13,16 @@ This addon was developed with the assistance of AI.
 
 Installation instructions are intentionally omitted while this branch is incomplete. Supported operating systems, architectures, native dependency packaging, and minimum versions still need validation.
 
+The native prototype can be built on a Linux development host with CMake, a C++20 compiler, PortAudio development files, and network access for the pinned `sendspin-cpp` dependency:
+
+```bash
+cmake -S native -B build/native
+cmake --build build/native
+```
+
 ## Usage
 
-The Kodi-side session, player-state, metadata, and audio-handoff code remains under development. A native playback process is not launched in this phase.
+Kodi can supervise the native process when its executable path is configured. The prototype currently uses the host's default PortAudio device and requires an explicit server URL or direct inbound connection; mDNS discovery and actual Sendspin playback remain unverified.
 
 ## Configuration
 
@@ -27,9 +34,9 @@ Current other settings include:
 
 - `Local proxy port` – local port for the control API (default `59999`).
 - `Local control API URL` – temporary local control URL (`http://127.0.0.1:59999` by default); the native backend will replace this interface.
-- `Audio device ID override` – force a specific Sendspin device, preferably as a stable raw ALSA name such as `hw:1,10`.
+- `Audio device ID override` – reserved for native output selection, which is not wired in this prototype yet.
 - `Kodi to Sendspin volume scale` – scale factor for volume mapping.
-- `Fallback audio device ID or ALSA name` – used when device detection cannot resolve the current output.
+- `Fallback audio device ID or ALSA name` – reserved for native output selection, which is not wired in this prototype yet.
 - `Enable multi-instance guard` – prevent multiple running instances.
 - `Activate visualisation window` – optionally show the visualisation UI.
 - `Stop when dummy playback stops` – whether the add-on shuts down when its dummy playback ends.

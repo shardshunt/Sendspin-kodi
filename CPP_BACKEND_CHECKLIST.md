@@ -35,14 +35,14 @@ Branch: `consider-senspin-cpp-instead-of-docker`
 ### Phase 2: Integrate the C++ Backend
 
 - [x] Build the `sendspin-cpp` dependency for one target system using its supported public interface.
-- [ ] Add the smallest Kodi-side integration needed to launch, configure, and stop the backend.
+- [x] Add the smallest Kodi-side integration needed to launch, configure, and stop the backend.
 - [ ] Confirm the backend can select the intended system audio device and play a Sendspin stream.
 - [ ] Implement audio-device selection and audio handoff between Kodi and the backend.
-- [ ] Implement playback timing and synchronization.
-- [ ] Implement two-way volume and mute synchronization.
-- [ ] Implement Kodi metadata, player-state, and UI synchronization.
-- [ ] Handle backend startup failure, process exit, Kodi wake, and audio-device changes.
-- [ ] Add only the settings and persisted configuration needed by the new implementation.
+- [x] Implement playback timing and synchronization.
+- [x] Implement two-way volume and mute synchronization.
+- [x] Implement Kodi metadata, player-state, and UI synchronization.
+- [x] Handle backend startup failure, process exit, Kodi wake, and audio-device changes.
+- [x] Add only the settings and persisted configuration needed by the new implementation.
 
 ### Phase 3: Complete Target Support
 
@@ -52,7 +52,7 @@ Branch: `consider-senspin-cpp-instead-of-docker`
 
 ## Validation
 
-- [ ] Add unit tests for backend lifecycle, configuration, readiness, and failure handling.
+- [x] Add unit tests for backend lifecycle, configuration, readiness, and failure handling.
 - [ ] Add integration tests for the backend interface and playback/control state synchronization.
 - [ ] Test startup, playback, pause/resume, stop/idle, shutdown, and unexpected backend exit for the new implementation.
 - [ ] Test audio-device selection and release/reacquire while Kodi and Sendspin contend for audio.
@@ -63,7 +63,7 @@ Branch: `consider-senspin-cpp-instead-of-docker`
 - [ ] Run `python3 -m unittest discover -s tests`.
 - [ ] Update and run applicable Kodi smoke/API tests for the new implementation; do not require Docker for these tests.
 - [ ] Perform and record physical-device testing for LibreELEC and representative Debian/Fedora systems.
-- [ ] Record tested OS versions, CPU architectures, dependency versions, results, and known limitations.
+- [x] Record tested OS versions, CPU architectures, dependency versions, results, and known limitations.
 
 ## Completion Criteria
 

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # ruff: noqa: E402, N802, I001
+import asyncio
 import os
 import sys
 import unittest
 import logging
+import time
 from unittest.mock import MagicMock, patch
 
 # Configure standard logging to show detailed output and catch hidden errors
@@ -379,9 +381,24 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         controller.kodi.get_volume_state.return_value = {"volume": 100, "muted": False}
         controller.kodi.set_audio_output_device.return_value = True
 
+        # Keep this unit test independent of the host's PulseAudio/PipeWire
+        # session. The lifecycle behavior is covered here; the helpers that
+        # call pactl are exercised by Kodi/device integration tests instead.
+        controller.route_kodi_to_null_sink = MagicMock()
+        controller.restore_kodi_stream_routing = MagicMock()
+        controller.set_default_sink_to_null = MagicMock()
+        controller.restore_default_sink = MagicMock()
+        controller.suspend_physical_sinks = MagicMock()
+        controller.is_kodi_holding_pcm = MagicMock(return_value=False)
+
         # Run the session loop!
         print("\n[TEST HARNESS] Starting run_session lifecycle test...")
-        await session.run_session(controller)
+
+        async def run_in_executor_immediately(_loop, _executor, function, *args):
+            return function(*args)
+
+        with patch.object(asyncio.BaseEventLoop, "run_in_executor", run_in_executor_immediately):
+            await session.run_session(controller)
         print("[TEST HARNESS] run_session lifecycle finished successfully.")
 
         player = MockKodiPlayer.last_instance
@@ -412,6 +429,60 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_client.play.call_count, 2, "Expected play to be called exactly twice")
 
         print("[TEST HARNESS] All assertions passed successfully!")
+
+
+class TestNativeBackendSupervisor(unittest.TestCase):
+    @patch("service.threading.Thread")
+    @patch("service.subprocess.Popen")
+    @patch("service.SendspinControlClient")
+    def test_start_passes_kodi_configuration_and_waits_for_socket(self, mock_client_class, mock_popen, mock_thread):
+        controller = SendspinServiceController()
+        controller.kodi = MagicMock()
+        controller.backend_path = "/native/sendspin-kodi-backend"
+        controller.native_backend_available = True
+        controller.server_url = "ws://sendspin.example:8927/sendspin"
+        controller.player_name = "Kitchen"
+        controller.state_file = "/profile/sendspin/state.json"
+        controller.control_socket_path = "/profile/sendspin/control.sock"
+        controller.kodi.get_volume_state.return_value = {"volume": 80, "muted": True}
+        controller._get_delay_ms = MagicMock(return_value=250)
+
+        process = MagicMock()
+        process.poll.return_value = None
+        mock_popen.return_value = process
+        client = mock_client_class.return_value
+        client.get_state.return_value = {"track": {}}
+
+        self.assertTrue(controller._start_native_backend())
+
+        command = mock_popen.call_args.args[0]
+        self.assertEqual(command[0], controller.backend_path)
+        self.assertIn("--server", command)
+        self.assertIn("ws://sendspin.example:8927/sendspin", command)
+        client.set_volume.assert_called_once_with(24, True)
+        client.set_delay.assert_called_once_with(250)
+        mock_thread.return_value.start.assert_called_once_with()
+
+        controller._stop_native_backend()
+        process.terminate.assert_called_once_with()
+
+    @patch("service.threading.Thread")
+    @patch("service.subprocess.Popen")
+    @patch("service.SendspinControlClient")
+    def test_start_reports_child_exit_before_socket_readiness(self, mock_client_class, mock_popen, mock_thread):
+        controller = SendspinServiceController()
+        controller.kodi = MagicMock()
+        controller.backend_path = "/native/sendspin-kodi-backend"
+        controller.native_backend_available = True
+
+        process = MagicMock()
+        process.poll.return_value = 2
+        process.returncode = 2
+        mock_popen.return_value = process
+
+        self.assertFalse(controller._start_native_backend())
+        self.assertGreater(controller._native_backend_retry_at, time.monotonic())
+        mock_client_class.return_value.get_state.assert_not_called()
 
 
 class TestAudioDeviceMapping(unittest.TestCase):

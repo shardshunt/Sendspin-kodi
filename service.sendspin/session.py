@@ -147,6 +147,9 @@ async def run_session(controller: SendspinServiceController):
                 except Exception as e:
                     log.warning(f"Could not release audio during backend recovery: {e}")
 
+            if controller.native_backend_available:
+                await asyncio.get_running_loop().run_in_executor(None, controller.restart_native_backend)
+
             audio_claimed = False
             user_released_audio = False
             paused_ticks = 0
@@ -174,6 +177,8 @@ async def run_session(controller: SendspinServiceController):
                 await asyncio.get_running_loop().run_in_executor(None, controller.release_sendspin_audio)
 
             controller.update_sendspin_audio_device(changed_device)
+            if controller.native_backend_available:
+                await asyncio.get_running_loop().run_in_executor(None, controller.restart_native_backend)
             return True
 
         log.info("Entering Sendspin service loop. Audio will be claimed on active playback.")
@@ -203,6 +208,13 @@ async def run_session(controller: SendspinServiceController):
             playback_state = {}
             audio_state = {}
             sendspin_volume_state = None
+
+            if controller.backend_needs_recovery():
+                log.warning("Native backend process or control socket is unavailable; attempting recovery.")
+                await reset_session_state("native backend unavailable or exited")
+                connection_seen = False
+                connection_lost_since = None
+                continue
 
             if sendspin_state:
                 track_info = sendspin_state.get("track") or {}

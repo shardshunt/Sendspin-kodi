@@ -4,6 +4,7 @@
     <import addon="xbmc.python" version="3.0.0"/>
   </requires>
   <extension point="xbmc.service" library="service_entry.py" start="login"/>
+  <extension point="xbmc.python.pluginsource" library="default.py" provides="audio"/>
   <extension point="xbmc.addon.metadata">
     <summary lang="en_GB">Sendspin Audio App</summary>
     <description lang="en_GB">Kodi service integration for Sendspin playback with native Kodi player controls.</description>

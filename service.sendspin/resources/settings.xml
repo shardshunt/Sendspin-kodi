@@ -10,11 +10,14 @@
     </category>
 
     <category label="Connection">
+        <setting id="server_url" type="text" label="Sendspin server WebSocket URL (optional)" default="" advanced="true" />
         <setting id="proxy_port" type="number" label="Local proxy port" default="59999" advanced="true" />
         <setting id="control_url" type="text" label="Local control API URL" default="http://127.0.0.1:59999" advanced="true" />
     </category>
 
     <category label="Client">
+        <setting id="backend_path" type="text" label="Native backend executable path" default="" advanced="true" />
+        <setting id="player_name" type="text" label="Sendspin player name" default="Kodi" />
         <setting id="audio_device_override" type="text" label="Audio device override (e.g. hw:1,10; leave empty to auto-detect)" default="" advanced="true" />
         <setting id="fallback_audio_device" type="text" label="Fallback audio device ID or ALSA name" default="8" />
         <setting id="instance_guard_enabled" type="bool" label="Enable multi-instance guard" default="true" />

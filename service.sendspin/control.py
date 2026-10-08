@@ -1,5 +1,6 @@
 import json
 import logging
+import socket
 import urllib.error
 import urllib.request
 
@@ -7,10 +8,11 @@ import urllib.request
 class SendspinControlClient:
     """HTTP client for the Sendspin daemon control API."""
 
-    def __init__(self, base_url: str, timeout: float = 0.75) -> None:
+    def __init__(self, base_url: str, timeout: float = 0.75, socket_path: str | None = None) -> None:
         self.logger = logging.getLogger("sendspin")
         self.base_url = (base_url or "http://127.0.0.1:59999").rstrip("/")
         self.timeout = timeout
+        self.socket_path = socket_path
         self._logged_unavailable = False
 
     def command(self, name: str, **params) -> bool:
@@ -73,7 +75,15 @@ class SendspinControlClient:
     def get_state(self) -> dict | None:
         return self._get("/state")
 
+    def get_pairing_token(self) -> str | None:
+        response = self.command_response("pair_token")
+        token = response.get("token") if isinstance(response, dict) else None
+        return token if isinstance(token, str) and token else None
+
     def _get(self, path: str) -> dict | None:
+        if self.socket_path:
+            return self._request_unix_json({"command": "get_state"})
+
         request = urllib.request.Request(f"{self.base_url}{path}", method="GET")
 
         try:
@@ -95,9 +105,15 @@ class SendspinControlClient:
             return None
 
     def _post(self, path: str, payload: dict) -> bool:
-        return self._post_json(path, payload) is not None
+        response = self._post_json(path, payload)
+        if self.socket_path and isinstance(response, dict) and response.get("ok") is False:
+            return False
+        return response is not None
 
     def _post_json(self, path: str, payload: dict) -> dict | None:
+        if self.socket_path:
+            return self._request_unix_json(payload)
+
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}{path}",
@@ -134,4 +150,35 @@ class SendspinControlClient:
             return None
         except json.JSONDecodeError as e:
             self.logger.warning("Sendspin control response was not valid JSON: %s", e)
+            return None
+
+    def _request_unix_json(self, payload: dict) -> dict | None:
+        request = json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n"
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(self.timeout)
+                connection.connect(self.socket_path)
+                connection.sendall(request)
+                response = bytearray()
+                while len(response) <= 65536:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+                    if b"\n" in chunk:
+                        break
+                else:
+                    self.logger.warning("Native backend response exceeded 65536 bytes")
+                    return None
+
+            payload = json.loads(bytes(response).split(b"\n", 1)[0].decode("utf-8"))
+            if not isinstance(payload, dict):
+                self.logger.warning("Native backend returned a non-object JSON response")
+                return None
+            self._logged_unavailable = False
+            return payload
+        except (json.JSONDecodeError, UnicodeDecodeError, TimeoutError, OSError) as error:
+            if not self._logged_unavailable:
+                self._logged_unavailable = True
+                self.logger.warning("Native backend socket unavailable at %s: %s", self.socket_path, error)
             return None

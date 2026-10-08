@@ -1,11 +1,14 @@
+import asyncio
 import logging
 import os
 import re
 import subprocess
+import threading
 import time
 import xml.etree.ElementTree as ET
 
 import xbmcaddon
+import xbmcgui
 import xbmcvfs
 from control import SendspinControlClient
 from kodi import KodiManager
@@ -16,9 +19,33 @@ class SendspinServiceController:
         self.logger = logging.getLogger("sendspin")
         addon = xbmcaddon.Addon()
         control_url = addon.getSetting("control_url") or self._control_url_from_port(addon)
+        addon_path = addon.getAddonInfo("path")
+        self.backend_path = addon.getSetting("backend_path") or os.path.join(
+            addon_path, "resources", "bin", "sendspin-kodi-backend"
+        )
+        profile_path = addon.getAddonInfo("profile")
+        if profile_path:
+            try:
+                profile_path = xbmcvfs.translatePath(profile_path)
+            except Exception:
+                pass
+        self.profile_path = profile_path or os.path.join(
+            os.path.expanduser("~"), ".kodi", "userdata", "addon_data", "service.sendspin"
+        )
+        self.state_file = os.path.join(self.profile_path, "sendspin", "state.json")
+        self.control_socket_path = os.path.join(self.profile_path, "sendspin", "control.sock")
+        self.server_url = addon.getSetting("server_url").strip()
+        self.player_name = addon.getSetting("player_name") or "Kodi"
+        self.native_backend_available = os.path.isfile(self.backend_path) and os.access(self.backend_path, os.X_OK)
+        self.backend_process = None
+        self._backend_log_thread = None
+        self._native_backend_retry_at = 0.0
         self.volume_scale = self._get_volume_scale(addon)
         self.audio_device_id = "0"
-        self.control = SendspinControlClient(control_url)
+        self.control = SendspinControlClient(
+            control_url,
+            socket_path=self.control_socket_path if self.native_backend_available else None,
+        )
         self.kodi = KodiManager()
         self.original_kodi_device = None
         self.original_streamsilence = None
@@ -32,6 +59,119 @@ class SendspinServiceController:
     def _control_url_from_port(self, addon) -> str:
         port = addon.getSetting("proxy_port") or "59999"
         return f"http://127.0.0.1:{port}"
+
+    def _forward_backend_logs(self) -> None:
+        process = self.backend_process
+        if process is None or process.stdout is None:
+            return
+        for line in process.stdout:
+            self.logger.info("Native backend: %s", line.rstrip())
+
+    def _start_native_backend(self) -> bool:
+        if not self.native_backend_available:
+            self.logger.error("Native backend executable is missing or not executable: %s", self.backend_path)
+            return False
+
+        command = [
+            self.backend_path,
+            "--name",
+            self.player_name,
+            "--state-file",
+            self.state_file,
+            "--control-socket",
+            self.control_socket_path,
+        ]
+        volume_state = self.kodi.get_volume_state()
+        if not isinstance(volume_state, dict):
+            volume_state = {"volume": 100, "muted": False}
+        addon = xbmcaddon.Addon()
+        volume = max(0, min(100, round(int(volume_state.get("volume", 100)) * self.volume_scale)))
+        delay_ms = round(self._get_delay_ms(addon))
+        command.extend(
+            [
+                "--volume",
+                str(volume),
+                "--muted",
+                "true" if volume_state.get("muted", False) else "false",
+                "--delay-ms",
+                str(delay_ms),
+            ]
+        )
+        if self.server_url:
+            command.extend(["--server", self.server_url])
+
+        try:
+            self.backend_process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except OSError as error:
+            self.logger.error("Could not launch native backend %s: %s", self.backend_path, error)
+            self.backend_process = None
+            self._native_backend_retry_at = time.monotonic() + 5.0
+            return False
+
+        self._backend_log_thread = threading.Thread(target=self._forward_backend_logs, daemon=True)
+        self._backend_log_thread.start()
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if self.backend_process.poll() is not None:
+                self.logger.error(
+                    "Native backend exited during startup with status %s", self.backend_process.returncode
+                )
+                self._native_backend_retry_at = time.monotonic() + 5.0
+                return False
+            if self.control.get_state() is not None:
+                volume_state = self.kodi.get_volume_state()
+                if not isinstance(volume_state, dict):
+                    volume_state = {"volume": 100, "muted": False}
+                self.control.set_volume(
+                    max(0, min(100, round(int(volume_state.get("volume", 100)) * self.volume_scale))),
+                    bool(volume_state.get("muted", False)),
+                )
+                delay_ms = self._get_delay_ms(xbmcaddon.Addon())
+                if self.control.set_delay(delay_ms):
+                    self._last_applied_delay_ms = delay_ms
+                self._native_backend_retry_at = 0.0
+                self.logger.info("Native backend control socket is ready.")
+                return True
+            time.sleep(0.1)
+
+        self.logger.error("Native backend did not become ready within 15 seconds.")
+        self._stop_native_backend()
+        self._native_backend_retry_at = time.monotonic() + 5.0
+        return False
+
+    def _stop_native_backend(self) -> None:
+        process = self.backend_process
+        if process is None:
+            return
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        self.backend_process = None
+
+    def restart_native_backend(self) -> bool:
+        if not self.native_backend_available:
+            return False
+        if time.monotonic() < self._native_backend_retry_at:
+            return False
+        self._stop_native_backend()
+        return self._start_native_backend()
+
+    def backend_needs_recovery(self) -> bool:
+        if not self.native_backend_available or time.monotonic() < self._native_backend_retry_at:
+            return False
+        if self.backend_process is None or self.backend_process.poll() is not None:
+            return True
+        return self.control.get_state() is None
 
     def _get_volume_scale(self, addon) -> float:
         fallback = 0.3
@@ -361,7 +501,14 @@ class SendspinServiceController:
         ):
             self.logger.warning("Captured Kodi audio device is a software fallback: %s", self.original_kodi_device)
         self.update_sendspin_audio_device(self.original_kodi_device)
-        self.logger.warning("Native Sendspin backend is not integrated yet; leaving Kodi audio routing unchanged.")
+        if self.native_backend_available:
+            ready = await asyncio.get_running_loop().run_in_executor(None, self._start_native_backend)
+            if not ready:
+                self.logger.error("Native backend failed to start; Kodi audio routing remains unchanged.")
+        else:
+            self.logger.error(
+                "Native backend executable is not installed at %s; playback is unavailable.", self.backend_path
+            )
 
     def _switch_to_alternate(self):
         if not self.original_kodi_device:
@@ -644,9 +791,18 @@ class SendspinServiceController:
     def send_previous_track(self) -> bool:
         return self.control.previous_track()
 
+    def show_pairing_token(self) -> bool:
+        token = self.control.get_pairing_token()
+        if not token:
+            xbmcgui.Dialog().ok("Sendspin", "The native backend pairing token is not available.")
+            return False
+        xbmcgui.Dialog().textviewer("Sendspin pairing token", token)
+        return True
+
     async def cleanup(self) -> None:
         if self._audio_claimed:
             self.release_sendspin_audio_to_kodi()
         else:
             self.restore_kodi_audio_device()
+        await asyncio.get_running_loop().run_in_executor(None, self._stop_native_backend)
         await self.kodi.cleanup()
