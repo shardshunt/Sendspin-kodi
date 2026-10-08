@@ -46,17 +46,7 @@ python3 scripts/get_libs.py
 
 ---
 
-## 4. When Modifying Docker Image Settings or Version
-
-When editing `service.sendspin/docker_image_version.txt` or Docker settings in `service.sendspin/resources/settings.xml`:
-
-```bash
-tests/docker_image_pull_start_test.sh
-```
-
----
-
-## 5. Before Release or Version Bumps
+## 4. Before Release or Version Bumps
 
 Verify CalVer versioning, metadata sync (`addon.xml` vs `pyproject.toml`), and ZIP packaging:
 
@@ -66,7 +56,7 @@ python3 scripts/release.py --check
 
 ---
 
-## 6. Target Hardware Deployment (LibreELEC / CoreELEC)
+## 5. Target Hardware Deployment (LibreELEC / CoreELEC)
 
 When deploying to a physical test device:
 

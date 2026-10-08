@@ -1,8 +1,8 @@
 # Sendspin Control API
 
-This document defines the local HTTP API expected by the Kodi Sendspin add-on.
+This document records the temporary local HTTP API expected by the Kodi-side controller during Phase 1.
 
-The API is served by the `sendspin daemon` process running inside the Docker container. Kodi talks to it over the host network.
+The Docker-hosted backend that previously served this API has been removed. The native C++ backend will replace this HTTP contract with the local interface described in `CPP_BACKEND_ARCHITECTURE.md`.
 
 ## Defaults
 
@@ -125,7 +125,7 @@ Fields:
 }
 ```
 
-Closes the daemon's local audio stream and drops incoming chunks until audio is acquired again. This lets Kodi reclaim the shared audio device without restarting the Docker container.
+Closes the backend's local audio stream and drops incoming chunks until audio is acquired again. This lets Kodi reclaim the shared audio device while retaining the Sendspin connection.
 
 ### Acquire Audio
 

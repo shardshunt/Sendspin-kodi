@@ -87,7 +87,7 @@ async def run_session(controller: SendspinServiceController):
     log.info("--- Sendspin Service Session Starting ---")
 
     try:
-        log.info("Initializing Docker backend...")
+        log.info("Initializing Sendspin control session...")
         await controller.setup()
 
         monitor = SendspinMonitor(controller, log)
@@ -115,7 +115,7 @@ async def run_session(controller: SendspinServiceController):
         list_item = xbmcgui.ListItem("Sendspin Active")
         music_tag = list_item.getMusicInfoTag()
         music_tag.setTitle("Sendspin Audio")
-        music_tag.setArtist("Docker System")
+        music_tag.setArtist("Sendspin")
 
         async def start_playback():
             log.info("Starting dummy playback track...")
@@ -128,7 +128,7 @@ async def run_session(controller: SendspinServiceController):
             if is_setting_enabled("activate_visualisation_enabled"):
                 xbmc.executebuiltin("ActivateWindow(visualisation)")
 
-        async def recover_backend(reason: str):
+        async def reset_session_state(reason: str):
             nonlocal audio_claimed
             nonlocal user_released_audio
             nonlocal paused_ticks
@@ -139,18 +139,13 @@ async def run_session(controller: SendspinServiceController):
             nonlocal last_seen_title
             nonlocal current_duration
 
-            log.warning("Recovering Sendspin backend (%s)...", reason)
+            log.warning("Resetting Kodi session state (%s)...", reason)
             if audio_claimed:
                 log.info("Releasing audio to Kodi before backend recovery...")
                 try:
                     await asyncio.get_running_loop().run_in_executor(None, controller.release_sendspin_audio_to_kodi)
                 except Exception as e:
                     log.warning(f"Could not release audio during backend recovery: {e}")
-
-            try:
-                await controller.restart_backend()
-            except Exception as e:
-                log.error(f"Failed to recover backend: {e}")
 
             audio_claimed = False
             user_released_audio = False
@@ -179,11 +174,6 @@ async def run_session(controller: SendspinServiceController):
                 await asyncio.get_running_loop().run_in_executor(None, controller.release_sendspin_audio)
 
             controller.update_sendspin_audio_device(changed_device)
-            try:
-                await controller.restart_backend()
-            except Exception as e:
-                log.error(f"Failed to restart backend after Kodi audio device change: {e}")
-
             return True
 
         log.info("Entering Sendspin service loop. Audio will be claimed on active playback.")
@@ -201,8 +191,8 @@ async def run_session(controller: SendspinServiceController):
 
             if monitor.wake_event_triggered:
                 monitor.wake_event_triggered = False
-                log.info("Processing wake event: restarting Sendspin backend...")
-                await recover_backend("System.OnWake")
+                log.info("Processing Kodi wake event; resetting session state.")
+                await reset_session_state("System.OnWake")
                 connection_seen = False
                 connection_lost_since = None
 
@@ -213,13 +203,6 @@ async def run_session(controller: SendspinServiceController):
             playback_state = {}
             audio_state = {}
             sendspin_volume_state = None
-
-            if not sendspin_state and controller.backend_needs_recovery():
-                log.warning("Sendspin backend is unhealthy or unreachable; restarting Docker backend.")
-                await recover_backend("control API unavailable or backend exited")
-                connection_seen = False
-                connection_lost_since = None
-                continue
 
             if sendspin_state:
                 track_info = sendspin_state.get("track") or {}
@@ -237,7 +220,7 @@ async def run_session(controller: SendspinServiceController):
                             connection_lost_since = loop_time
                             log.warning("Sendspin server connection is no longer active; starting stale-session timer.")
                         elif loop_time - connection_lost_since >= connection_stale_grace_seconds:
-                            await recover_backend("stale Sendspin connection reported by control API")
+                            await reset_session_state("stale Sendspin connection reported by control API")
                             connection_seen = False
                             connection_lost_since = None
                             continue
@@ -332,7 +315,7 @@ async def run_session(controller: SendspinServiceController):
 
                         if acquired:
                             audio_claimed = True
-                            await asyncio.sleep(0.2)  # Give Docker a brief moment to lock the hardware device
+                            await asyncio.sleep(0.2)  # Give the playback backend time to lock the hardware device
                             log.info("Playback active; resetting stream to get headers...")
                             controller.suppress_kodi_player_events(3.0)
                             controller.send_pause()

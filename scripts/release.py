@@ -23,7 +23,6 @@ SETTINGS_XML = ADDON_DIR / "resources" / "settings.xml"
 PYPROJECT = ROOT / "pyproject.toml"
 ASSET_NAME = "service.sendspin.zip"
 ZIP_PATH = ROOT / ASSET_NAME
-DOCKER_PACKAGE_NAME = "sendspin-cli-for-sendspin-kodi"
 API_ROOT = "https://api.github.com"
 
 
@@ -77,22 +76,10 @@ def pyproject_version() -> str:
     return version
 
 
-def docker_image_version() -> str:
-    version_file = ADDON_DIR / "docker_image_version.txt"
-    try:
-        version = version_file.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise ReleaseError(f"Could not read {version_file.relative_to(ROOT)}: {exc}") from exc
-
-    if not version:
-        raise ReleaseError(f"{version_file.relative_to(ROOT)} is empty")
-    return version
-
-
-def validate_versions() -> tuple[str, str, str, list[str]]:
+def validate_versions() -> tuple[str, str, list[str]]:
     errors: list[str] = []
     addon_id, addon_version = "unknown", "unknown"
-    package_version, image_version = "unknown", "unknown"
+    package_version = "unknown"
 
     try:
         addon_id, addon_version = addon_metadata()
@@ -106,11 +93,6 @@ def validate_versions() -> tuple[str, str, str, list[str]]:
     except ReleaseError as exc:
         errors.append(str(exc))
 
-    try:
-        image_version = docker_image_version()
-    except ReleaseError as exc:
-        errors.append(str(exc))
-
     if addon_version != "unknown" and package_version != "unknown":
         if addon_version != package_version:
             errors.append(
@@ -118,7 +100,7 @@ def validate_versions() -> tuple[str, str, str, list[str]]:
                 f"{PYPROJECT.relative_to(ROOT)} has {package_version}"
             )
 
-    return addon_id, addon_version, image_version, errors
+    return addon_id, addon_version, errors
 
 
 def tag_for(version: str, tag_override: str | None = None) -> str:
@@ -213,7 +195,7 @@ def run_checks(
         all_passed = False
 
     # 1. Metadata Validation (addon.xml, pyproject.toml, settings.xml)
-    addon_id, version, image_version, local_errors = validate_versions()
+    addon_id, version, local_errors = validate_versions()
     metadata_ok = not local_errors
     print_status("Metadata Validation", metadata_ok, f"{addon_id} {version}" if metadata_ok else "")
     for e in local_errors:
@@ -248,13 +230,12 @@ def run_checks(
     if not fmt_ok:
         all_passed = False
 
-    # 2. Remote Checks (GitHub Release Tag and Docker Registry)
+    # 2. Remote Checks (GitHub release tag and version sequence)
     token = token_override or os.environ.get("GITHUB_TOKEN")
     tag = tag_for(version, tag_override)
 
     if not token:
         print_status("GitHub Release Check", True, f"Skipped (no token, tag {tag})")
-        print_status("Docker Image Check", True, "Skipped (no token)")
         print_status("Version Sequence Check", True, "Skipped (no token)")
     else:
         try:
@@ -264,14 +245,6 @@ def run_checks(
                 all_passed = False
             else:
                 print_status("GitHub Release Check", True, f"{tag} available")
-
-            if image_version != "unknown":
-                exists, detail = check_docker_image_exists(owner, image_version, token)
-                if exists:
-                    print_status("Docker Image Check", True, f"{image_version} found")
-                else:
-                    print_status("Docker Image Check", False, detail)
-                    all_passed = False
 
             # Version Sequence Check
             if fmt_ok and version != "unknown":
@@ -299,7 +272,7 @@ def run_checks(
                         print_status("Version Sequence Check", False, "Failed to parse tags")
                         all_passed = False
         except ReleaseError as exc:
-            print_status("GitHub/Docker API", False, str(exc))
+            print_status("GitHub API", False, str(exc))
             all_passed = False
 
     # 3. Build and Layout Validation
@@ -318,38 +291,6 @@ def run_checks(
         all_passed = False
 
     return all_passed, zip_path, version, tag, owner, repo
-
-
-def check_docker_image_exists(owner: str, version: str, token: str) -> tuple[bool, str]:
-    """Verifies that the required Docker image tag exists on GHCR using the GitHub API."""
-    last_error = "Package not found"
-    # GitHub distinguishes between users and orgs in the package API path
-    for type_prefix in ("users", "orgs"):
-        status, body, headers = github_request(
-            "GET",
-            f"/{type_prefix}/{owner}/packages/container/{DOCKER_PACKAGE_NAME}/versions?per_page=100",
-            token,
-        )
-        if status == 200:
-            try:
-                versions = json.loads(body.decode("utf-8"))
-                if not isinstance(versions, list):
-                    continue
-                for v in versions:
-                    tags = v.get("metadata", {}).get("container", {}).get("tags", [])
-                    if version in tags:
-                        return True, ""
-                return False, f"Tag '{version}' not found in the last 100 versions of {DOCKER_PACKAGE_NAME}"
-            except (json.JSONDecodeError, KeyError, TypeError):
-                continue
-        elif status != 404:
-            # If we get a 403 or other error, record it
-            last_error = f"HTTP {status}: {body.decode('utf-8', errors='replace').strip()}"
-            # Check if it's a permission issue often seen with tokens
-            if status == 403:
-                last_error += " (Check if token has 'read:packages' scope)"
-
-    return False, last_error
 
 
 def create_zip() -> Path:

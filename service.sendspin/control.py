@@ -120,7 +120,7 @@ class SendspinControlClient:
             if e.code == 400:
                 self.logger.warning(
                     "Sendspin control API returned 400 Bad Request at %s%s: command might be unsupported. "
-                    "Please ensure the Docker container version matches the add-on version.",
+                    "Please check that the Sendspin backend supports this command.",
                     self.base_url,
                     path,
                 )

@@ -1,8 +1,8 @@
 # Kodi Container Smoke Test
 
-This harness runs a headless Kodi Omega container with the local add-on bind-mounted into Kodi's add-ons directory. It also starts a tiny mock Sendspin control API so the add-on can exercise its Kodi lifecycle without starting the real Sendspin Docker backend.
+This harness runs a headless Kodi Omega container with the local add-on bind-mounted into Kodi's add-ons directory. It also starts a tiny mock Sendspin control API so the add-on can exercise its Kodi lifecycle without a playback backend.
 
-It is intended for quick bug reproduction and log collection. It does not replace testing on the target LibreELEC/CoreELEC box, because audio device locking, ALSA enumeration, and Docker socket behavior are host-specific.
+It is intended for quick bug reproduction and log collection. It does not replace testing on the target LibreELEC/CoreELEC box, because audio-device locking and ALSA enumeration are host-specific.
 
 ## Run
 
@@ -58,4 +58,4 @@ docker compose -f tests/kodi/docker-compose.yml down
 
 ## What It Skips
 
-The test settings set `docker_start_enabled=false`, so the add-on does not start the real Sendspin playback container. Use this mode for plugin and Kodi integration debugging. For full host integration, test on the target machine with Docker and `/dev/snd` available.
+The mock API exercises Kodi-side routes and player synchronization only. The native playback backend is not integrated yet; real audio playback and handoff must be tested after that phase is implemented.

@@ -1,9 +1,8 @@
 # Sendspin Audio Service for Kodi
 
-`service.sendspin` is a Kodi background service add-on that integrates Kodi with a Sendspin playback backend running in Docker.
+`service.sendspin` is being migrated from Docker-hosted playback to a native integration using the external [`sendspin-cpp`](https://github.com/Sendspin/sendspin-cpp) project.
 
-The add-on automatically launches a local [`sendspin-cli`](https://github.com/shardshunt/sendspin-cli-for-sendspin-kodi) daemon container, exposes a local control API, and synchronises Sendspin playback state, metadata, and volume with Kodi.
-
+This branch has removed Docker backend startup, but the native backend is not integrated yet. Playback is therefore unavailable in this intermediate state; do not package or deploy this branch for normal use until the C++ backend phase is complete.
 ## Disclaimer
 
 This add-on is in an ALPHA state. It is experimental and may contain bugs or be unstable. Use it at your own risk.
@@ -12,45 +11,11 @@ This addon was developed with the assistance of AI.
 
 ## Installation
 
-### LibreElec:
-
-  1. Install the docker addon for LibreELEC.
-  2. Dowload the latest service.sendspin.zip fron releases.
-  3. Open Kodi.
-  4. Go to **Settings** → **Add-ons**.
-  5. Choose **Install from zip file**.
-  6. Select `service.sendspin.zip` in the dowloaded location.
-  7. Upon first use the plugin will pull the docker image, this may take a while.
-
-### Debian:
-*These steps are **not** needed on LibreELEC, as Kodi runs as `root` there by default and uses ALSA natively.*
-
-  1. Install docker
-      ```bash
-      sudo apt install docker
-      ```
-
-  2. The user running Kodi must have permission to execute Docker commands without `sudo`. This is done by adding the user to the `docker` group:
-     ```bash
-     sudo usermod -aG docker $USER
-     sudo reboot
-     ```
-     *(Note: A reboot of the host computer or a full user logout/login is required after running this command for the group changes to take effect).*
-
-  3. (Not always necissary) Kodi may need to be configured to run with the `KODI_AE_SINK=ALSA` environment variable to ensure direct ALSA hardware access. To set this system-wide, add the variable to `/etc/environment`:
-     ```bash
-     echo "KODI_AE_SINK=ALSA" | sudo tee -a /etc/environment
-     ```
-     *(Note: You will need to log out and back in, or reboot the machine, for this to take effect).*
-
-  4. Follow Steps 2-7 of the LibreElec Instructions
+Installation instructions are intentionally omitted while this branch is incomplete. Supported operating systems, architectures, native dependency packaging, and minimum versions still need validation.
 
 ## Usage
 
-The service runs automatically in the background on Kodi startup. Playback is started and controlled remotely from your Sendspin server (e.g., Music Assistant), and Kodi automatically synchronises its active player state, metadata, OSD, and volume.
-
-On the first start, a progress dialog will show the pull status of the docker image if it's not present locally. **Note: This can take a long time.**
-If the addon encounters issues, verify that your audio output settings and ALSA configurations are set correctly.
+The Kodi-side session, player-state, metadata, and audio-handoff code remains under development. A native playback process is not launched in this phase.
 
 ## Configuration
 
@@ -61,11 +26,7 @@ Note that Static Delay is set from the setting menu, change and apply the value 
 Current other settings include:
 
 - `Local proxy port` – local port for the control API (default `59999`).
-- `Container control API URL` – local control URL (`http://127.0.0.1:59999` by default).
-- `Docker container name` – default `sendspin-player`.
-- `Docker image name` – default `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi`.
-- `Docker config directory` – default `/storage/.config/sendspin`.
-- `Start Docker backend` – disable container startup for API-only or test runs.
+- `Local control API URL` – temporary local control URL (`http://127.0.0.1:59999` by default); the native backend will replace this interface.
 - `Audio device ID override` – force a specific Sendspin device, preferably as a stable raw ALSA name such as `hw:1,10`.
 - `Kodi to Sendspin volume scale` – scale factor for volume mapping.
 - `Fallback audio device ID or ALSA name` – used when device detection cannot resolve the current output.
@@ -73,17 +34,13 @@ Current other settings include:
 - `Activate visualisation window` – optionally show the visualisation UI.
 - `Stop when dummy playback stops` – whether the add-on shuts down when its dummy playback ends.
 
-*(Note: Docker image tag is defined in `service.sendspin/docker_image_version.txt`.)*
-
 ## What it does
 
 - Runs as a Kodi background service (`service.sendspin`).
-- Starts a Docker container to host the Sendspin daemon.
-- Uses a local HTTP control API to keep Kodi and Sendspin in sync.
+- Retains Kodi-side player/UI and session synchronization scaffolding for the native backend.
 - Maps Kodi playback metadata into Kodi's native player UI.
 - Keeps a silent dummy Kodi track playing while Sendspin is active so Kodi's player UI stays in sync.
 - Uses the Sendspin control API to release the backend audio stream when playback is paused or idle so Kodi can reclaim the audio device immediately (e.g. for OSD navigation sounds or alternative local audio playback).
-- Automatically pulls the configured Docker image if it is missing locally.
 
 ## Notes on implementation:
 
@@ -105,7 +62,7 @@ To avoid hardware contention and ALSA device locking issues, the service manages
 
 ### Local control API
 
-The container is configured to expose a local HTTP control API. See `SENDSPIN_CONTROL_API.md` for the exact API contract.
+The Kodi-side controller still documents its temporary local HTTP contract in `SENDSPIN_CONTROL_API.md`. Phase 2 will replace it with the native backend interface.
 
 Default control API settings:
 
@@ -113,22 +70,13 @@ Default control API settings:
 - `POST /control` for playback commands
 - `GET /state` for current track/playback/volume state
 
-### Docker and image behavior
-
-- The add-on uses the configured Docker image and container name.
-- It pulls `ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi` using the version in `service.sendspin/docker_image_version.txt`.
-- The add-on mounts `/dev/snd` into the container and uses host networking.
-- The container stores its runtime configuration under the configured Docker config directory.
-
 ### Tests
 
 The repository includes Kodi smoke tests and API scenario coverage:
 
 - `tests/kodi/smoke.sh` — container-based Kodi smoke test harness.
 - `tests/kodi/api_scenarios.sh` — exercises the documented control API and plugin routes.
-- `tests/docker_image_pull_start_test.sh` — validates Docker image pull and container start behavior.
-
-The smoke harness uses Podman when available and can also run with Docker Compose.
+The Kodi smoke harness uses Podman when available and can optionally use Docker Compose to run Kodi itself; neither path starts a Sendspin playback container.
 
 ### Release and packaging
 
@@ -146,8 +94,7 @@ A helper script is available to package and publish the add-on:
     - **Git Integrity**: Ensures the working tree is clean and synced with `origin/main`.
     - **Version Check**: Validates the `YYYY.Month.Patch` calendar versioning format.
     - **Metadata Alignment**: Syncs versions across `addon.xml` and `pyproject.toml`.
-    - **Docker Version Source**: Validates `service.sendspin/docker_image_version.txt` exists and is readable.
-    - **Remote Validation**: Verifies the release tag is available and the Docker image exists on GHCR (requires `GITHUB_TOKEN`).
+    - **Remote Validation**: Verifies the release tag is available (requires `GITHUB_TOKEN`).
     - **ZIP Layout**: Builds and verifies the final ZIP structure meets Kodi standards.
 - `python scripts/release.py --publish --token GITHUB_TOKEN` — Performs all checks and, if successful, creates a GitHub release and uploads the asset.
 - `python scripts/release.py --publish --force --token GITHUB_TOKEN` — Bypasses non-critical validation failures (e.g., git cleanliness) to force a release.
