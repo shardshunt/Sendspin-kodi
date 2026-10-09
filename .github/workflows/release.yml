@@ -18,6 +18,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install native backend build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y cmake pkg-config portaudio19-dev libasound2-dev
+
+      - name: Build native backend into add-on package
+        run: scripts/build_native_backend.sh
+
       - name: Publish release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

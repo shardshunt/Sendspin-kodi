@@ -423,14 +423,19 @@ int main(int argc, char** argv) {
     sendspin::FilePersistenceProvider persistence(options.state_file);
     sendspin::SendspinClient client(std::move(config));
     client.set_persistence_provider(&persistence);
-    client.set_unpaired_access_enabled(false);
+    // Match sendspin-cpp-cli's `-a` diagnostic/player mode. Music Assistant
+    // 2.10.1 presents a new Kodi client with the Sentinel PSK before pairing;
+    // allowing unpaired access lets the server activate playback immediately.
+    client.set_unpaired_access_enabled(true);
 
     sendspin::PlayerRoleConfig player_config;
     player_config.audio_formats = {
-        {sendspin::SendspinCodecFormat::FLAC, 2, 48000, 16},
-        {sendspin::SendspinCodecFormat::FLAC, 2, 44100, 16},
         {sendspin::SendspinCodecFormat::PCM, 2, 48000, 16},
         {sendspin::SendspinCodecFormat::PCM, 2, 44100, 16},
+        // Prefer PCM on LibreELEC. The bundled micro-FLAC decoder rejects
+        // some Music Assistant FLAC frames, while the PCM path is reliable.
+        {sendspin::SendspinCodecFormat::FLAC, 2, 48000, 16},
+        {sendspin::SendspinCodecFormat::FLAC, 2, 44100, 16},
     };
     auto& player = client.add_player(std::move(player_config));
     player.set_output_delay_adjustable(true);

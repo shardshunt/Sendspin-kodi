@@ -13,12 +13,20 @@ This addon was developed with the assistance of AI.
 
 Installation instructions are intentionally omitted while this branch is incomplete. Supported operating systems, architectures, native dependency packaging, and minimum versions still need validation.
 
-The native prototype can be built on a Linux development host with CMake, a C++20 compiler, PortAudio development files, and network access for the pinned `sendspin-cpp` dependency:
+The native backend is staged into the package with CMake, a C++20 compiler, PortAudio/ALSA development files, and network access for the pinned `sendspin-cpp` dependency. The recommended host-clean build uses Podman:
 
 ```bash
-cmake -S native -B build/native
-cmake --build build/native
+scripts/build_native_backend_container.sh
 ```
+
+This builds a Fedora 44 development image and writes only the resulting
+target-specific executable into the add-on package. The direct
+`scripts/build_native_backend.sh` command remains available inside a
+matching development container or distrobox.
+
+Release packaging requires the resulting executable at
+`service.sendspin/resources/bin/sendspin-kodi-backend`; the release ZIP includes
+that file automatically.
 
 ## Usage
 

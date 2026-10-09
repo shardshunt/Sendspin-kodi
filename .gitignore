@@ -18,6 +18,10 @@ xbmc/
 # Ignore vendored addon libraries (keeps repo small)
 service.sendspin/resources/lib/
 
+# Locally/CI-built native backend; release packaging includes it in the ZIP.
+service.sendspin/resources/bin/*
+!service.sendspin/resources/bin/README.md
+
 # Deployment script (machine-specific)
 upload
 sendspin-protocol.txt
@@ -40,6 +44,9 @@ __pycache__/
 
 # Ignore sync conflict files
 *.sync-conflict-*
+
+# Native/CMake build tree
+build/
 
 # Ignore AI exclusion file
 .aiexclude

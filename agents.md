@@ -46,7 +46,17 @@ python3 scripts/get_libs.py
 
 ---
 
-## 4. Before Release or Version Bumps
+## 4. When Building the Native Backend
+
+Build it without installing the toolchain on the host:
+
+```bash
+scripts/build_native_backend_container.sh
+```
+
+---
+
+## 5. Before Release or Version Bumps
 
 Verify CalVer versioning, metadata sync (`addon.xml` vs `pyproject.toml`), and ZIP packaging:
 
@@ -56,7 +66,7 @@ python3 scripts/release.py --check
 
 ---
 
-## 5. Target Hardware Deployment (LibreELEC / CoreELEC)
+## 6. Target Hardware Deployment (LibreELEC / CoreELEC)
 
 When deploying to a physical test device:
 
