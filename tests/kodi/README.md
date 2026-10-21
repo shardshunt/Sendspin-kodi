@@ -90,3 +90,25 @@ The native harness uses Podman's host user namespace and retained host groups
 so the container process can access `/dev/snd` through the host's device ACLs.
 If rootless Podman exposes the device nodes but ALSA still reports `Unknown
 PCM`, run the harness rootful with `PODMAN_ROOTFUL=true`.
+
+For a repeatable end-to-end test, create a Music Assistant long-lived access
+token and save it locally (the file is outside the repository):
+
+```bash
+install -d ~/.config/sendspin-kodi
+printf '%s\n' 'YOUR_MUSIC_ASSISTANT_TOKEN' > ~/.config/sendspin-kodi/ma_api_token
+chmod 600 ~/.config/sendspin-kodi/ma_api_token
+```
+
+Then one command starts Kodi, discovers the Sendspin player, searches for a
+test track, starts it through Music Assistant, and follows the Kodi log:
+
+```bash
+tests/kodi/native_playback_test.sh
+```
+
+Override the track or player when needed:
+
+```bash
+MA_QUERY='The Beatles' MA_PLAYER_NAME='Kodi' tests/kodi/native_playback_test.sh
+```
