@@ -103,6 +103,7 @@ async def run_session(controller: SendspinServiceController):
         last_seen_title = None
         current_duration = 0
         audio_claimed = False
+        dummy_playback_unavailable_logged = False
         paused_ticks = 0
         user_released_audio = False
         pending_reset_resume = False
@@ -282,6 +283,9 @@ async def run_session(controller: SendspinServiceController):
 
             if is_kodi_playing:
                 user_released_audio = False
+                dummy_playback_unavailable_logged = False
+            elif not audio_claimed:
+                dummy_playback_unavailable_logged = False
 
             if not has_track and not is_playing and not audio_claimed:
                 # State 3: Stopped/Idle
@@ -345,11 +349,17 @@ async def run_session(controller: SendspinServiceController):
                             controller.release_sendspin_audio_to_kodi()
                             audio_claimed = False
                             user_released_audio = True
-                        elif not user_released_audio:
+                        elif not user_released_audio and (
+                            not audio_claimed or is_setting_enabled("require_dummy_playback")
+                        ):
                             log.info("Sendspin playing but dummy playback inactive: restarting dummy playback...")
                             await start_playback()
                             is_kodi_playing = True
                             is_kodi_paused = False
+                        elif audio_claimed:
+                            if not dummy_playback_unavailable_logged:
+                                log.info("Kodi dummy playback is unavailable; continuing with native Sendspin audio.")
+                                dummy_playback_unavailable_logged = True
 
                     if is_kodi_playing and is_kodi_paused:
                         log.info("Sendspin playing: resuming Kodi dummy playback.")
@@ -450,7 +460,7 @@ async def run_session(controller: SendspinServiceController):
                             player.updateInfoTag(list_item)
                         except Exception as e:
                             log.warning(f"Could not update playing info tag: {e}")
-                    elif is_playing:
+                    elif is_playing and (not audio_claimed or is_setting_enabled("require_dummy_playback")):
                         await start_playback()
                     last_seen_title = title
 

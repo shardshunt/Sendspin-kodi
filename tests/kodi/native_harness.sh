@@ -18,11 +18,14 @@ ALSA_DEVICE="${ALSA_DEVICE:-hw:2,0}"
 KODI_PRIVILEGED="${KODI_PRIVILEGED:-false}"
 PODMAN_ROOTFUL="${PODMAN_ROOTFUL:-false}"
 
+die() { echo "native harness: $*" >&2; exit 1; }
 podman_cmd=(podman)
-[[ "$PODMAN_ROOTFUL" == true ]] && podman_cmd=(sudo podman)
+if [[ "$PODMAN_ROOTFUL" == true ]]; then
+  sudo -v || die "sudo authentication is required for rootful Podman"
+  podman_cmd=(sudo -n podman)
+fi
 p() { "${podman_cmd[@]}" "$@"; }
 
-die() { echo "native harness: $*" >&2; exit 1; }
 cleanup() { p rm -f "$KODI_CONTAINER" >/dev/null 2>&1 || true; [[ "$START_MUSIC_ASSISTANT" == true ]] && p rm -f "$MA_CONTAINER" >/dev/null 2>&1 || true; }
 cleanup_runtime() {
   [[ ! -e "$RUNTIME_DIR" ]] && return 0
@@ -30,12 +33,21 @@ cleanup_runtime() {
     return 0
   fi
   if [[ "$PODMAN_ROOTFUL" == true ]]; then
-    sudo rm -rf -- "$RUNTIME_DIR"
+    sudo -n rm -rf -- "$RUNTIME_DIR"
   else
     p unshare rm -rf "$RUNTIME_DIR"
   fi
 }
-diagnostics() { if p container exists "$KODI_CONTAINER"; then p exec "$KODI_CONTAINER" sh -c "test -f /config/.kodi/temp/kodi.log && grep -Ei 'sendspin|service.sendspin|error|exception' /config/.kodi/temp/kodi.log | tail -n 180 || true"; fi; if [[ "$START_MUSIC_ASSISTANT" == true ]] && p container exists "$MA_CONTAINER"; then p logs --tail=120 "$MA_CONTAINER" || true; fi; }
+diagnostics() {
+  if p container exists "$KODI_CONTAINER"; then
+    p inspect "$KODI_CONTAINER" --format 'Kodi container: status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{.State.Error}}' || true
+    p logs --tail=120 "$KODI_CONTAINER" || true
+    p exec "$KODI_CONTAINER" sh -c "test -f /config/.kodi/temp/kodi.log && grep -Ei 'sendspin|service.sendspin|error|exception' /config/.kodi/temp/kodi.log | tail -n 180 || true" || true
+  fi
+  if [[ "$START_MUSIC_ASSISTANT" == true ]] && p container exists "$MA_CONTAINER"; then
+    p logs --tail=120 "$MA_CONTAINER" || true
+  fi
+}
 
 command -v podman >/dev/null 2>&1 || die "Podman is required"
 [[ -x "$BACKEND_SOURCE" ]] || die "native backend is missing or not executable: $BACKEND_SOURCE"
@@ -126,5 +138,19 @@ curl -fsS "$JSONRPC_URL" -H 'Content-Type: application/json' --data '{"jsonrpc":
 echo
 echo "Native harness running; Sendspin URL: $SENDSPIN_SERVER_URL"
 echo "Kodi JSON-RPC: $JSONRPC_URL"
-while p inspect -f '{{.State.Running}}' "$KODI_CONTAINER" 2>/dev/null | grep -q true; do sleep 5; done
-die "Kodi container exited"
+while :; do
+  kodi_running="$(p inspect -f '{{.State.Running}}' "$KODI_CONTAINER" 2>/dev/null || true)"
+  if [[ "$kodi_running" == true ]]; then
+    sleep 5
+    continue
+  fi
+
+  # Rootful Podman can briefly reject inspect while the container is being
+  # started or its init process is changing state. Do not mistake that
+  # transient empty result for a stopped Kodi container.
+  if [[ -z "$kodi_running" ]] && p container exists "$KODI_CONTAINER"; then
+    sleep 2
+    continue
+  fi
+  die "Kodi container exited"
+done

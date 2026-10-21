@@ -136,6 +136,57 @@ string(REPLACE
     SENDSPIN_PLAYER_TEXT "${SENDSPIN_PLAYER_TEXT}")
 file(WRITE "${SENDSPIN_PROTOCOL_SOURCE}" "${SENDSPIN_PLAYER_TEXT}")
 
+set(PORTAUDIO_SINK_SOURCE "${sendspin_cpp_SOURCE_DIR}/examples/common/portaudio_sink.cpp")
+file(READ "${PORTAUDIO_SINK_SOURCE}" PORTAUDIO_SINK_TEXT)
+string(FIND "${PORTAUDIO_SINK_TEXT}" "SENDSPIN_KODI_PORTAUDIO_DEVICE_FALLBACK" PORTAUDIO_DEVICE_MARKER)
+if(PORTAUDIO_DEVICE_MARKER EQUAL -1)
+    string(REPLACE
+        [=[    PaDeviceIndex device = Pa_GetDefaultOutputDevice();]=]
+        [=[    PaDeviceIndex device = select_output_device();]=]
+        PORTAUDIO_SINK_TEXT "${PORTAUDIO_SINK_TEXT}")
+    string(REPLACE
+        [=[static constexpr size_t RING_BUFFER_CAPACITY = 16384;]=]
+        [=[static constexpr size_t RING_BUFFER_CAPACITY = 16384;
+
+// SENDSPIN_KODI_PORTAUDIO_DEVICE_FALLBACK: PortAudio's ALSA host API can
+// report paNoDevice as its default while still exposing usable output
+// devices. Prefer the requested ALSA identity, then the PortAudio default,
+// then the first enumerated output device.
+static PaDeviceIndex select_output_device() {
+    const char* requested = std::getenv("SENDSPIN_AUDIO_DEVICE");
+    const int device_count = Pa_GetDeviceCount();
+    if (requested != nullptr && requested[0] != '\0' && device_count >= 0) {
+        for (PaDeviceIndex index = 0; index < device_count; ++index) {
+            const PaDeviceInfo* info = Pa_GetDeviceInfo(index);
+            if (info != nullptr && info->maxOutputChannels > 0 &&
+                std::strstr(info->name, requested) != nullptr) {
+                return index;
+            }
+        }
+    }
+
+    const PaDeviceIndex default_device = Pa_GetDefaultOutputDevice();
+    if (default_device != paNoDevice) {
+        const PaDeviceInfo* info = Pa_GetDeviceInfo(default_device);
+        if (info != nullptr && info->maxOutputChannels > 0) {
+            return default_device;
+        }
+    }
+
+    if (device_count >= 0) {
+        for (PaDeviceIndex index = 0; index < device_count; ++index) {
+            const PaDeviceInfo* info = Pa_GetDeviceInfo(index);
+            if (info != nullptr && info->maxOutputChannels > 0) {
+                return index;
+            }
+        }
+    }
+    return paNoDevice;
+}]=]
+        PORTAUDIO_SINK_TEXT "${PORTAUDIO_SINK_TEXT}")
+    file(WRITE "${PORTAUDIO_SINK_SOURCE}" "${PORTAUDIO_SINK_TEXT}")
+endif()
+
 # The server's older schema calls the adjustable-delay command
 # set_static_delay and carries static_delay_ms; v0.9.3 used output_delay names.
 set(SENDSPIN_COMMAND_SOURCE "${sendspin_cpp_SOURCE_DIR}/src/protocol_messages.h")

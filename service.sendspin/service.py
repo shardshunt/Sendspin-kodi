@@ -501,6 +501,7 @@ class SendspinServiceController:
         ):
             self.logger.warning("Captured Kodi audio device is a software fallback: %s", self.original_kodi_device)
         self.update_sendspin_audio_device(self.original_kodi_device)
+
         if self.native_backend_available:
             ready = await asyncio.get_running_loop().run_in_executor(None, self._start_native_backend)
             if not ready:
@@ -515,7 +516,21 @@ class SendspinServiceController:
             return False
 
         options = self.kodi.get_audio_output_device_options()
+        options = [
+            option
+            for option in options
+            if isinstance(option, dict)
+            and isinstance(option.get("value"), str)
+            and option["value"].strip()
+            and option["value"].strip().lower() not in {"error", "none"}
+        ]
         if not options:
+            if self.original_kodi_device.strip().lower() in {"default", "sysdefault"}:
+                self.logger.warning(
+                    "Kodi did not expose a valid alternate audio device for generic %s; leaving the setting unchanged.",
+                    self.original_kodi_device,
+                )
+                return False
             self.logger.warning("Could not retrieve audio output device options from Kodi; using static fallbacks.")
             # Fall back to static candidates as a safety measure
             candidates = ["ALSA:pipewire", "PULSE:default", "ALSA:sysdefault"]
@@ -715,7 +730,14 @@ class SendspinServiceController:
         return bool(self._set_kodi_audio_device(self.original_kodi_device))
 
     def prepare_kodi_audio_for_sendspin(self) -> None:
-        if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
+        device_text = (self.original_kodi_device or "").lower()
+        hardware_audio = (
+            "alsa" in device_text
+            or "default" in device_text
+            or "sysdefault" in device_text
+            or self.audio_device_id.startswith("hw:")
+        )
+        if hardware_audio:
             if self.original_streamsilence is None:
                 self.original_streamsilence = self.kodi.get_setting_value("audiooutput.streamsilence")
                 self.kodi.set_setting_value("audiooutput.streamsilence", 0)

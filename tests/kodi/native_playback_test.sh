@@ -20,6 +20,9 @@ die() { echo "native playback test: $*" >&2; exit 1; }
 command -v curl >/dev/null || die "curl is required"
 command -v python3 >/dev/null || die "python3 is required"
 [[ -x "$HARNESS" ]] || die "native harness is missing"
+if [[ "$PODMAN_ROOTFUL" == true ]]; then
+  sudo -v || die "sudo authentication is required for rootful Podman"
+fi
 if [[ -z "$MA_API_TOKEN" && -r "$MA_API_TOKEN_FILE" ]]; then
   MA_API_TOKEN="$(<"$MA_API_TOKEN_FILE")"
 fi
@@ -61,6 +64,30 @@ done
 curl -fsS http://127.0.0.1:8080/jsonrpc -H 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","method":"JSONRPC.Ping","id":1}' >/dev/null \
   || die "Kodi did not become ready"
+
+echo "Waiting for the native Sendspin backend..."
+for _ in $(seq 1 60); do
+  if [[ "$PODMAN_ROOTFUL" == true ]]; then
+    if sudo -n podman exec "$KODI_CONTAINER" test -S \
+      /config/.kodi/userdata/addon_data/service.sendspin/sendspin/control.sock 2>/dev/null; then
+      break
+    fi
+  elif podman exec "$KODI_CONTAINER" test -S \
+      /config/.kodi/userdata/addon_data/service.sendspin/sendspin/control.sock 2>/dev/null; then
+    break
+  fi
+  kill -0 "$HARNESS_PID" 2>/dev/null || die "native harness exited before the backend became ready"
+  sleep 1
+done
+if [[ "$PODMAN_ROOTFUL" == true ]]; then
+  sudo -n podman exec "$KODI_CONTAINER" test -S \
+    /config/.kodi/userdata/addon_data/service.sendspin/sendspin/control.sock 2>/dev/null \
+    || die "native Sendspin backend did not become ready"
+else
+  podman exec "$KODI_CONTAINER" test -S \
+    /config/.kodi/userdata/addon_data/service.sendspin/sendspin/control.sock 2>/dev/null \
+    || die "native Sendspin backend did not become ready"
+fi
 
 if [[ -z "$MA_PLAYER_ID" ]]; then
   for _ in $(seq 1 30); do
@@ -145,7 +172,7 @@ fi
 echo "Native playback test is running: $MA_QUERY"
 echo "Press Ctrl-C to stop."
 if [[ "$PODMAN_ROOTFUL" == true ]]; then
-  sudo podman exec "$KODI_CONTAINER" sh -c \
+  sudo -n podman exec "$KODI_CONTAINER" sh -c \
     'tail -f /config/.kodi/temp/kodi.log | grep --line-buffered -Ei "Sendspin|connected|playing|track|stream|error"'
 else
   podman exec "$KODI_CONTAINER" sh -c \
