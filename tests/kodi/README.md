@@ -58,4 +58,35 @@ docker compose -f tests/kodi/docker-compose.yml down
 
 ## What It Skips
 
-The mock API exercises Kodi-side routes and player synchronization only. The native playback backend is not integrated yet; real audio playback and handoff must be tested after that phase is implemented.
+The mock API exercises Kodi-side routes and player synchronization only. Use
+`native_harness.sh` for the real backend and audio-handoff path.
+
+Build the ABI-matched backend with:
+
+```bash
+scripts/build_native_backend_ubuntu_container.sh
+```
+
+Then run:
+
+```bash
+SENDSPIN_SERVER_URL=ws://192.168.0.161:8927/sendspin tests/kodi/native_harness.sh
+```
+
+The default ALSA target is `hw:2,0` (the USB device on the test host). Set
+`ALSA_DEVICE=hw:1,3` or another `hw:CARD,DEVICE` value to select a different
+output.
+
+If rootless Podman still hides the host ALSA cards, retry the hardware test
+with the test container privileged:
+
+```bash
+KODI_PRIVILEGED=true \
+SENDSPIN_SERVER_URL=ws://192.168.0.161:8927/sendspin \
+  tests/kodi/native_harness.sh
+```
+
+The native harness uses Podman's host user namespace and retained host groups
+so the container process can access `/dev/snd` through the host's device ACLs.
+If rootless Podman exposes the device nodes but ALSA still reports `Unknown
+PCM`, run the harness rootful with `PODMAN_ROOTFUL=true`.
