@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ADDON_DIR = ROOT / "service.sendspin"
 ADDON_XML = ADDON_DIR / "addon.xml"
 SETTINGS_XML = ADDON_DIR / "resources" / "settings.xml"
-NATIVE_BACKEND = ADDON_DIR / "resources" / "bin" / "sendspin-kodi-backend"
+NATIVE_BACKEND_ROOT = ADDON_DIR / "resources" / "bin"
+NATIVE_ARCHITECTURES = ("x86_64", "aarch64", "armv7")
 PYPROJECT = ROOT / "pyproject.toml"
 ASSET_NAME = "service.sendspin.zip"
 ZIP_PATH = ROOT / ASSET_NAME
@@ -297,9 +298,17 @@ def run_checks(
 def create_zip() -> Path:
     if not ADDON_DIR.is_dir():
         raise ReleaseError(f"Missing addon directory {ADDON_DIR.relative_to(ROOT)}")
-    if not NATIVE_BACKEND.is_file() or not os.access(NATIVE_BACKEND, os.X_OK):
+    missing_backends = [
+        architecture
+        for architecture in NATIVE_ARCHITECTURES
+        if not (backend := NATIVE_BACKEND_ROOT / architecture / "sendspin-kodi-backend").is_file()
+        or not os.access(backend, os.X_OK)
+    ]
+    if missing_backends:
         raise ReleaseError(
-            f"Missing executable {NATIVE_BACKEND.relative_to(ROOT)}; run scripts/build_native_backend.sh first"
+            "Missing native backend architectures: "
+            + ", ".join(missing_backends)
+            + "; build each target with NATIVE_ARCH=<architecture>"
         )
 
     with zipfile.ZipFile(ZIP_PATH, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
@@ -331,9 +340,10 @@ def verify_zip_layout(zip_path: Path, addon_id: str, version: str) -> list[str]:
                     if root.attrib.get("version") != version:
                         errors.append(f"version in zip is {root.attrib.get('version')!r}")
 
-            backend_in_zip = f"{addon_id}/resources/bin/sendspin-kodi-backend"
-            if backend_in_zip not in namelist:
-                errors.append(f"missing {backend_in_zip}")
+            for architecture in NATIVE_ARCHITECTURES:
+                backend_in_zip = f"{addon_id}/resources/bin/{architecture}/sendspin-kodi-backend"
+                if backend_in_zip not in namelist:
+                    errors.append(f"missing {backend_in_zip}")
 
             forbidden = [n for n in namelist if "__pycache__" in n or n.endswith((".pyc", ".pyo"))]
             if forbidden:

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import platform
 import re
 import subprocess
 import threading
@@ -20,9 +21,8 @@ class SendspinServiceController:
         addon = xbmcaddon.Addon()
         control_url = addon.getSetting("control_url") or self._control_url_from_port(addon)
         addon_path = addon.getAddonInfo("path")
-        self.backend_path = addon.getSetting("backend_path") or os.path.join(
-            addon_path, "resources", "bin", "sendspin-kodi-backend"
-        )
+        configured_backend_path = (addon.getSetting("backend_path") or "").strip()
+        self.backend_path = configured_backend_path or self._default_backend_path(addon_path)
         profile_path = addon.getAddonInfo("profile")
         if profile_path:
             try:
@@ -56,6 +56,30 @@ class SendspinServiceController:
         self._profile_settings_missing_logged = False
         self._audio_claimed = False
         self._last_kodi_audio_device = None
+
+    @staticmethod
+    def _architecture_name(machine=None):
+        machine = (machine or platform.machine()).lower()
+        architecture_aliases = {
+            "amd64": "x86_64",
+            "x86-64": "x86_64",
+            "x86_64": "x86_64",
+            "aarch64": "aarch64",
+            "arm64": "aarch64",
+            "armv7": "armv7",
+            "armv7l": "armv7",
+            "armhf": "armv7",
+        }
+        return architecture_aliases.get(machine, machine)
+
+    @classmethod
+    def _default_backend_path(cls, addon_path):
+        backend_root = os.path.join(addon_path, "resources", "bin")
+        architecture_path = os.path.join(backend_root, cls._architecture_name(), "sendspin-kodi-backend")
+        legacy_path = os.path.join(backend_root, "sendspin-kodi-backend")
+        if os.path.isfile(architecture_path):
+            return architecture_path
+        return legacy_path
 
     def _control_url_from_port(self, addon) -> str:
         port = addon.getSetting("proxy_port") or "59999"

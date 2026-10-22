@@ -5,7 +5,18 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNTIME_DIR="${RUNTIME_DIR:-$ROOT_DIR/tests/kodi/.native-runtime}"
 RUNTIME_ADDON_DIR="$RUNTIME_DIR/addons/service.sendspin"
 RUNTIME_USERDATA_DIR="$RUNTIME_DIR/userdata"
-BACKEND_SOURCE="${NATIVE_BACKEND:-$ROOT_DIR/service.sendspin/resources/bin/sendspin-kodi-backend}"
+if [[ -n "${NATIVE_BACKEND:-}" ]]; then
+  BACKEND_SOURCE="$NATIVE_BACKEND"
+else
+  case "$(uname -m)" in
+    x86_64|amd64) native_arch=x86_64 ;;
+    aarch64|arm64) native_arch=aarch64 ;;
+    armv7|armv7l|armhf) native_arch=armv7 ;;
+    *) native_arch="$(uname -m)" ;;
+  esac
+  BACKEND_SOURCE="$ROOT_DIR/service.sendspin/resources/bin/$native_arch/sendspin-kodi-backend"
+  [[ -x "$BACKEND_SOURCE" ]] || BACKEND_SOURCE="$ROOT_DIR/service.sendspin/resources/bin/sendspin-kodi-backend"
+fi
 KODI_IMAGE="${KODI_IMAGE:-localhost/sendspin-kodi-native:omega-pactl}"
 KODI_CONTAINERFILE="${KODI_CONTAINERFILE:-$ROOT_DIR/tests/kodi/Containerfile.native-kodi}"
 KODI_CONTAINER="${KODI_CONTAINER:-sendspin-kodi-native-test}"

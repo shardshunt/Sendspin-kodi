@@ -432,6 +432,29 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
 
 
 class TestNativeBackendSupervisor(unittest.TestCase):
+    def test_architecture_aliases(self):
+        self.assertEqual(SendspinServiceController._architecture_name("x86_64"), "x86_64")
+        self.assertEqual(SendspinServiceController._architecture_name("amd64"), "x86_64")
+        self.assertEqual(SendspinServiceController._architecture_name("aarch64"), "aarch64")
+        self.assertEqual(SendspinServiceController._architecture_name("arm64"), "aarch64")
+        self.assertEqual(SendspinServiceController._architecture_name("armv7l"), "armv7")
+
+    @patch("service.os.path.isfile")
+    @patch("service.platform.machine", return_value="aarch64")
+    def test_architecture_backend_precedes_legacy_backend(self, _machine, mock_isfile):
+        mock_isfile.side_effect = lambda path: path.endswith("aarch64/sendspin-kodi-backend")
+
+        path = SendspinServiceController._default_backend_path("/dummy/addon")
+
+        self.assertEqual(path, "/dummy/addon/resources/bin/aarch64/sendspin-kodi-backend")
+
+    @patch("service.os.path.isfile", return_value=False)
+    @patch("service.platform.machine", return_value="armv7l")
+    def test_architecture_backend_falls_back_to_legacy_path(self, _machine, _isfile):
+        path = SendspinServiceController._default_backend_path("/dummy/addon")
+
+        self.assertEqual(path, "/dummy/addon/resources/bin/sendspin-kodi-backend")
+
     @patch("service.threading.Thread")
     @patch("service.subprocess.Popen")
     @patch("service.SendspinControlClient")

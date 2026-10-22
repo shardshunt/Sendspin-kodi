@@ -2,9 +2,20 @@ FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update \
+RUN echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy main restricted universe multiverse\n\
+deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-updates main restricted universe multiverse\n\
+deb [arch=amd64] http://security.ubuntu.com/ubuntu/ jammy-security main restricted universe multiverse\n\
+deb [arch=arm64,armhf] http://ports.ubuntu.com/ubuntu-ports/ jammy main restricted universe multiverse\n\
+deb [arch=arm64,armhf] http://ports.ubuntu.com/ubuntu-ports/ jammy-updates main restricted universe multiverse\n\
+deb [arch=arm64,armhf] http://ports.ubuntu.com/ubuntu-ports/ jammy-security main restricted universe multiverse" > /etc/apt/sources.list \
+    && dpkg --add-architecture arm64 \
+    && dpkg --add-architecture armhf \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates libasound2-dev cmake g++ git make patch pkg-config \
+        ca-certificates cmake g++ git make patch pkg-config binutils \
+        libasound2-dev \
+        gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libasound2-dev:arm64 \
+        gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libasound2-dev:armhf \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
