@@ -17,6 +17,10 @@ START_MUSIC_ASSISTANT="${START_MUSIC_ASSISTANT:-false}"
 ALSA_DEVICE="${ALSA_DEVICE:-hw:2,0}"
 KODI_PRIVILEGED="${KODI_PRIVILEGED:-false}"
 PODMAN_ROOTFUL="${PODMAN_ROOTFUL:-false}"
+ORIGINAL_DEFAULT_SINK=""
+if command -v pactl >/dev/null 2>&1; then
+  ORIGINAL_DEFAULT_SINK="$(pactl get-default-sink 2>/dev/null || true)"
+fi
 
 die() { echo "native harness: $*" >&2; exit 1; }
 podman_cmd=(podman)
@@ -26,7 +30,41 @@ if [[ "$PODMAN_ROOTFUL" == true ]]; then
 fi
 p() { "${podman_cmd[@]}" "$@"; }
 
-cleanup() { p rm -f "$KODI_CONTAINER" >/dev/null 2>&1 || true; [[ "$START_MUSIC_ASSISTANT" == true ]] && p rm -f "$MA_CONTAINER" >/dev/null 2>&1 || true; }
+restore_host_audio() {
+  command -v pactl >/dev/null 2>&1 || return 0
+
+  local usb_card usb_sink target_sink
+  usb_card="$(pactl list short cards 2>/dev/null | awk '/C-Media.*USB_Audio_Device/ {print $2; exit}')"
+  if [[ -n "$usb_card" ]]; then
+    # A forced backend/container stop can leave the card registered but with
+    # no playback node. Cycling the profile recreates the PipeWire sink.
+    pactl set-card-profile "$usb_card" off 2>/dev/null || true
+    sleep 1
+    if ! pactl set-card-profile "$usb_card" output:analog-stereo+input:mono-fallback 2>/dev/null; then
+      pactl set-card-profile "$usb_card" output:analog-stereo 2>/dev/null || true
+    fi
+  fi
+
+  for _ in 1 2 3 4 5; do
+    sleep 1
+    usb_sink="$(pactl list short sinks 2>/dev/null | awk '/C-Media.*USB_Audio_Device.*analog-stereo/ {print $2; exit}')"
+    [[ -n "$usb_sink" ]] && break
+  done
+  if [[ -n "$usb_sink" ]]; then
+    pactl suspend-sink "$usb_sink" 0 2>/dev/null || true
+  fi
+
+  target_sink="$ORIGINAL_DEFAULT_SINK"
+  if [[ -z "$target_sink" ]] || ! pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -Fxq "$target_sink"; then
+    target_sink="$usb_sink"
+  fi
+  [[ -n "$target_sink" ]] && pactl set-default-sink "$target_sink" 2>/dev/null || true
+}
+cleanup() {
+  p rm -f "$KODI_CONTAINER" >/dev/null 2>&1 || true
+  [[ "$START_MUSIC_ASSISTANT" == true ]] && p rm -f "$MA_CONTAINER" >/dev/null 2>&1 || true
+  restore_host_audio
+}
 cleanup_runtime() {
   [[ ! -e "$RUNTIME_DIR" ]] && return 0
   if rm -rf "$RUNTIME_DIR" 2>/dev/null; then

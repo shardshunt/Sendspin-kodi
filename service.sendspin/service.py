@@ -50,6 +50,7 @@ class SendspinServiceController:
         self.original_kodi_device = None
         self.original_streamsilence = None
         self.original_default_sink = None
+        self.original_card_profiles = {}
         self._suppress_kodi_player_events_until = 0.0
         self._last_applied_delay_ms = None
         self._profile_settings_missing_logged = False
@@ -605,6 +606,12 @@ class SendspinServiceController:
             return
 
         try:
+            sinks = subprocess.run(
+                ["pactl", "list", "short", "sinks"], capture_output=True, text=True, timeout=5
+            ).stdout
+            if not any(line.split("\t")[1:2] == ["dummy_sink"] for line in sinks.splitlines()):
+                self.logger.warning("PipeWire dummy sink is unavailable; leaving the default sink unchanged.")
+                return
             res = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=5)
             curr_sink = res.stdout.strip()
             if curr_sink and curr_sink != "dummy_sink":
@@ -723,7 +730,81 @@ class SendspinServiceController:
         except Exception as e:
             self.logger.warning(f"Failed to manage physical sink suspend state: {e}")
 
+    def _physical_card_profiles(self) -> dict[str, str]:
+        """Return active profiles for cards that currently expose physical sinks."""
+        import shutil
+
+        if not shutil.which("pactl"):
+            return {}
+
+        try:
+            sinks = subprocess.run(
+                ["pactl", "list", "short", "sinks"], capture_output=True, text=True, timeout=5
+            ).stdout.splitlines()
+            cards = subprocess.run(
+                ["pactl", "list", "short", "cards"], capture_output=True, text=True, timeout=5
+            ).stdout.splitlines()
+            card_details = subprocess.run(["pactl", "list", "cards"], capture_output=True, text=True, timeout=5).stdout
+            card_names = [line.split("\t")[1] for line in cards if len(line.split("\t")) >= 2]
+            profiles = {}
+            for line in sinks:
+                parts = line.split("\t")
+                if len(parts) < 2 or parts[1] == "dummy_sink":
+                    continue
+                sink_name = parts[1]
+                sink_prefix = sink_name.removeprefix("alsa_output.")
+                for card_name in card_names:
+                    card_prefix = card_name.removeprefix("alsa_card.")
+                    if sink_prefix.startswith(card_prefix):
+                        profile = ""
+                        for card_block in re.split(r"(?m)^Card #", card_details):
+                            if f"Name: {card_name}" not in card_block:
+                                continue
+                            profile_match = re.search(r"(?m)^\s*Active Profile:\s*(\S+)", card_block)
+                            if profile_match:
+                                profile = profile_match.group(1)
+                            break
+                        if profile:
+                            profiles[card_name] = profile
+                        break
+            return profiles
+        except Exception as error:
+            self.logger.warning(f"Could not capture PipeWire card profiles: {error}")
+            return {}
+
+    def disable_physical_card_profiles(self) -> None:
+        """Disable PipeWire card profiles so native ALSA can claim the hardware."""
+        import shutil
+
+        if not shutil.which("pactl") or self.original_card_profiles:
+            return
+
+        self.original_card_profiles = self._physical_card_profiles()
+        for card_name in self.original_card_profiles:
+            try:
+                self.logger.info(f"Disabling PipeWire card profile '{card_name}' for native playback...")
+                subprocess.run(["pactl", "set-card-profile", card_name, "off"], timeout=5, check=False)
+            except Exception as error:
+                self.logger.warning(f"Could not disable PipeWire card profile {card_name}: {error}")
+
+    def restore_physical_card_profiles(self) -> None:
+        """Restore PipeWire card profiles captured before native playback."""
+        import shutil
+
+        if not shutil.which("pactl"):
+            return
+
+        profiles = self.original_card_profiles
+        self.original_card_profiles = {}
+        for card_name, profile in profiles.items():
+            try:
+                self.logger.info(f"Restoring PipeWire card profile '{card_name}' to '{profile}'...")
+                subprocess.run(["pactl", "set-card-profile", card_name, profile], timeout=5, check=False)
+            except Exception as error:
+                self.logger.warning(f"Could not restore PipeWire card profile {card_name}: {error}")
+
     def restore_kodi_audio_device(self) -> bool:
+        self.restore_physical_card_profiles()
         self.restore_default_sink()
         self.suspend_physical_sinks(False)
         if self.original_streamsilence is not None:
@@ -752,8 +833,10 @@ class SendspinServiceController:
                 self.original_streamsilence = self.kodi.get_setting_value("audiooutput.streamsilence")
                 self.kodi.set_setting_value("audiooutput.streamsilence", 0)
             self._switch_to_alternate()
+            self.setup_pipewire_null_sink()
             self.set_default_sink_to_null()
             self.suspend_physical_sinks(True)
+            self.disable_physical_card_profiles()
 
     def acquire_sendspin_audio(self) -> bool:
         if self._audio_claimed and not self.is_sendspin_audio_released():
