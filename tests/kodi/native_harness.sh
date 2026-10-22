@@ -6,7 +6,7 @@ RUNTIME_DIR="${RUNTIME_DIR:-$ROOT_DIR/tests/kodi/.native-runtime}"
 RUNTIME_ADDON_DIR="$RUNTIME_DIR/addons/service.sendspin"
 RUNTIME_USERDATA_DIR="$RUNTIME_DIR/userdata"
 BACKEND_SOURCE="${NATIVE_BACKEND:-$ROOT_DIR/service.sendspin/resources/bin/sendspin-kodi-backend}"
-KODI_IMAGE="${KODI_IMAGE:-localhost/sendspin-kodi-native:omega}"
+KODI_IMAGE="${KODI_IMAGE:-localhost/sendspin-kodi-native:omega-pactl}"
 KODI_CONTAINERFILE="${KODI_CONTAINERFILE:-$ROOT_DIR/tests/kodi/Containerfile.native-kodi}"
 KODI_CONTAINER="${KODI_CONTAINER:-sendspin-kodi-native-test}"
 MA_CONTAINER="${MA_CONTAINER:-sendspin-music-assistant-test}"
@@ -117,12 +117,22 @@ if [[ -n "$audio_gid" ]]; then
 else
   audio_group_args+=(--group-add keep-groups)
 fi
+pipewire_args=()
+host_runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [[ -S "$host_runtime_dir/pulse/native" ]]; then
+  pipewire_args+=(
+    --volume "$host_runtime_dir:$host_runtime_dir:rw"
+    -e "XDG_RUNTIME_DIR=$host_runtime_dir"
+    -e "PULSE_SERVER=unix:$host_runtime_dir/pulse/native"
+  )
+fi
 p run -d --name "$KODI_CONTAINER" --network host --userns host \
   "${audio_group_args[@]}" \
   "${security_args[@]}" "${device_args[@]}" "${audio_metadata_args[@]}" \
   -e "PUID=${PUID:-$(id -u)}" -e "PGID=${PGID:-${audio_gid:-$(id -g "${USER:-$(id -un)}")}}" -e "TZ=${TZ:-Pacific/Auckland}" \
   -e PA_ALSA_PLUGHW=1 \
   -e "SENDSPIN_AUDIO_DEVICE=${ALSA_DEVICE}" \
+  "${pipewire_args[@]}" \
   -v "$RUNTIME_DIR/asound.conf:/etc/asound.conf:ro" \
   -v "$RUNTIME_USERDATA_DIR:/config/.kodi/userdata:Z" \
   -v "$RUNTIME_ADDON_DIR:/config/.kodi/addons/service.sendspin:Z" "$KODI_IMAGE" >/dev/null

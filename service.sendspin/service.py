@@ -503,6 +503,16 @@ class SendspinServiceController:
         self.update_sendspin_audio_device(self.original_kodi_device)
 
         if self.native_backend_available:
+            # PortAudio enumerates ALSA devices during backend startup. Make
+            # Kodi/PipeWire release the physical device first, otherwise the
+            # USB card can be absent from PortAudio's device list and the
+            # backend silently falls back to the motherboard output.
+            await asyncio.get_running_loop().run_in_executor(None, self.prepare_kodi_audio_for_sendspin)
+            for _ in range(30):
+                released = await asyncio.get_running_loop().run_in_executor(None, self.is_kodi_holding_pcm)
+                if not released:
+                    break
+                await asyncio.sleep(0.1)
             ready = await asyncio.get_running_loop().run_in_executor(None, self._start_native_backend)
             if not ready:
                 self.logger.error("Native backend failed to start; Kodi audio routing remains unchanged.")

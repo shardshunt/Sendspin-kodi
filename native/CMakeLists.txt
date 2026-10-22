@@ -138,7 +138,7 @@ file(WRITE "${SENDSPIN_PROTOCOL_SOURCE}" "${SENDSPIN_PLAYER_TEXT}")
 
 set(PORTAUDIO_SINK_SOURCE "${sendspin_cpp_SOURCE_DIR}/examples/common/portaudio_sink.cpp")
 file(READ "${PORTAUDIO_SINK_SOURCE}" PORTAUDIO_SINK_TEXT)
-string(FIND "${PORTAUDIO_SINK_TEXT}" "SENDSPIN_KODI_PORTAUDIO_DEVICE_FALLBACK" PORTAUDIO_DEVICE_MARKER)
+string(FIND "${PORTAUDIO_SINK_TEXT}" "SENDSPIN_KODI_PORTAUDIO_DEVICE_DIAGNOSTICS" PORTAUDIO_DEVICE_MARKER)
 if(PORTAUDIO_DEVICE_MARKER EQUAL -1)
     string(REPLACE
         [=[    PaDeviceIndex device = Pa_GetDefaultOutputDevice();]=]
@@ -148,18 +148,26 @@ if(PORTAUDIO_DEVICE_MARKER EQUAL -1)
         [=[static constexpr size_t RING_BUFFER_CAPACITY = 16384;]=]
         [=[static constexpr size_t RING_BUFFER_CAPACITY = 16384;
 
-// SENDSPIN_KODI_PORTAUDIO_DEVICE_FALLBACK: PortAudio's ALSA host API can
+// SENDSPIN_KODI_PORTAUDIO_DEVICE_DIAGNOSTICS: PortAudio's ALSA host API can
 // report paNoDevice as its default while still exposing usable output
 // devices. Prefer the requested ALSA identity, then the PortAudio default,
 // then the first enumerated output device.
 static PaDeviceIndex select_output_device() {
     const char* requested = std::getenv("SENDSPIN_AUDIO_DEVICE");
     const int device_count = Pa_GetDeviceCount();
+    std::fprintf(stderr, "PortAudio: requested device '%s', output devices=%d\\n",
+                 requested == nullptr ? "" : requested, device_count);
     if (requested != nullptr && requested[0] != '\0' && device_count >= 0) {
         for (PaDeviceIndex index = 0; index < device_count; ++index) {
             const PaDeviceInfo* info = Pa_GetDeviceInfo(index);
+            if (info != nullptr && info->maxOutputChannels > 0) {
+                std::fprintf(stderr, "PortAudio: device[%d] '%s' outputs=%d\\n",
+                             index, info->name, info->maxOutputChannels);
+            }
             if (info != nullptr && info->maxOutputChannels > 0 &&
                 std::strstr(info->name, requested) != nullptr) {
+                std::fprintf(stderr, "PortAudio: selected requested device[%d] '%s'\\n",
+                             index, info->name);
                 return index;
             }
         }
@@ -169,6 +177,8 @@ static PaDeviceIndex select_output_device() {
     if (default_device != paNoDevice) {
         const PaDeviceInfo* info = Pa_GetDeviceInfo(default_device);
         if (info != nullptr && info->maxOutputChannels > 0) {
+            std::fprintf(stderr, "PortAudio: selected default device[%d] '%s'\\n",
+                         default_device, info->name);
             return default_device;
         }
     }
@@ -177,6 +187,8 @@ static PaDeviceIndex select_output_device() {
         for (PaDeviceIndex index = 0; index < device_count; ++index) {
             const PaDeviceInfo* info = Pa_GetDeviceInfo(index);
             if (info != nullptr && info->maxOutputChannels > 0) {
+                std::fprintf(stderr, "PortAudio: selected first output device[%d] '%s'\\n",
+                             index, info->name);
                 return index;
             }
         }

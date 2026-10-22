@@ -13,6 +13,8 @@ MA_API_TOKEN="${MA_API_TOKEN:-}"
 MA_API_TOKEN_FILE="${MA_API_TOKEN_FILE:-${HOME:-}/.config/sendspin-kodi/ma_api_token}"
 ALSA_DEVICE="${ALSA_DEVICE:-hw:2,0}"
 PODMAN_ROOTFUL="${PODMAN_ROOTFUL:-true}"
+AUTO_DIAGNOSTICS="${AUTO_DIAGNOSTICS:-true}"
+DIAGNOSTICS_TIMEOUT="${DIAGNOSTICS_TIMEOUT:-45}"
 KODI_CONTAINER="${KODI_CONTAINER:-sendspin-kodi-native-test}"
 HARNESS="$ROOT_DIR/tests/kodi/native_harness.sh"
 
@@ -38,6 +40,59 @@ import sys
 print(json.dumps({"message_id": "sendspin-kodi-native-test", "command": sys.argv[1], "args": json.loads(sys.argv[2])}))
 PY
 )"
+}
+
+kodi_exec() {
+  if [[ "$PODMAN_ROOTFUL" == true ]]; then
+    sudo -n podman exec "$KODI_CONTAINER" "$@"
+  else
+    podman exec "$KODI_CONTAINER" "$@"
+  fi
+}
+
+kodi_log_contains() {
+  local pattern="$1"
+  kodi_exec sh -c 'grep -E -- "$1" /config/.kodi/temp/kodi.log >/dev/null 2>&1' sh "$pattern"
+}
+
+wait_for_kodi_log() {
+  local pattern="$1" timeout_seconds="$2"
+  for _ in $(seq 1 "$timeout_seconds"); do
+    if kodi_log_contains "$pattern"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+audio_diagnostics() {
+  local alsa_card="${ALSA_DEVICE#hw:}"
+  local alsa_device="${alsa_card#*,}"
+  alsa_card="${alsa_card%%,*}"
+  local pcm_node="/dev/snd/pcmC${alsa_card}D${alsa_device}p"
+  echo
+  echo "--- Native audio diagnostics ---"
+  kodi_exec sh -c '
+    echo "[PortAudio/backend]"
+    grep -E "PortAudio:|failed to open|Could not configure|Acquired Sendspin|Stream successfully|Sendspin server connection" /config/.kodi/temp/kodi.log | tail -n 80 || true
+    echo "[PCM status]"
+    for status in /proc/asound/card*/pcm*/sub*/status; do
+      state=$(head -n 1 "$status" 2>/dev/null || true)
+      case "$state" in
+        closed|"") ;;
+        *) echo "$status"; cat "$status" ;;
+      esac
+    done
+    echo "[backend state]"
+    cat /config/.kodi/userdata/addon_data/service.sendspin/sendspin/state.json 2>/dev/null || true
+  ' || true
+
+  echo "[host device owner]"
+  sudo -n fuser -v "$pcm_node" 2>&1 || true
+  echo "[host mixer]"
+  sudo -n amixer -c "$alsa_card" scontents 2>&1 || true
+  echo "--- End native audio diagnostics ---"
 }
 
 HARNESS_PID=""
@@ -171,6 +226,18 @@ fi
 
 echo "Native playback test is running: $MA_QUERY"
 echo "Press Ctrl-C to stop."
+if [[ "$AUTO_DIAGNOSTICS" == true ]]; then
+  echo "Waiting for native playback before collecting diagnostics..."
+  if wait_for_kodi_log "Acquired Sendspin audio output" "$DIAGNOSTICS_TIMEOUT"; then
+    # Give the backend a short opportunity to open the stream and begin
+    # consuming audio before taking the snapshot.
+    sleep 2
+    audio_diagnostics
+  else
+    echo "Native playback did not reach the audio-acquired milestone within ${DIAGNOSTICS_TIMEOUT}s."
+    audio_diagnostics
+  fi
+fi
 if [[ "$PODMAN_ROOTFUL" == true ]]; then
   sudo -n podman exec "$KODI_CONTAINER" sh -c \
     'tail -f /config/.kodi/temp/kodi.log | grep --line-buffered -Ei "Sendspin|connected|playing|track|stream|error"'
