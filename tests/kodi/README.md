@@ -73,9 +73,11 @@ Then run:
 SENDSPIN_SERVER_URL=ws://192.168.0.161:8927/sendspin tests/kodi/native_harness.sh
 ```
 
-The default ALSA target is `hw:2,0` (the USB device on the test host). Set
-`ALSA_DEVICE=hw:1,3` or another `hw:CARD,DEVICE` value to select a different
-output.
+By default, the harness resolves the host's current PipeWire/PulseAudio default
+sink to its ALSA card and device when the command starts. This requires `pactl`
+and a default sink backed by an ALSA playback device. For a virtual or otherwise
+unresolvable sink, set `ALSA_DEVICE=hw:CARD,DEVICE` explicitly, for example
+`ALSA_DEVICE=hw:0,0`.
 
 If rootless Podman still hides the host ALSA cards, retry the hardware test
 with the test container privileged:

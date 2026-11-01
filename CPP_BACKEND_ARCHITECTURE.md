@@ -80,7 +80,7 @@ The socket can release/reacquire the sink while the Sendspin client remains acti
 
 ### Configuration, Security, and Compatibility
 
-Pass player name, optional outbound URL, profile-owned state file, and socket path to the backend. The prototype does not advertise over mDNS, so it needs a server URL or direct inbound connection. State and pairing data are owner-only. The CMake project pins `sendspin-cpp` v0.9.3 at commit `91038b72892596b9ec0cccfec1b9e6ebc58ba148`; target packaging and ABI support remain unverified.
+Pass player name, optional outbound URL, profile-owned state file, and socket path to the backend. The prototype does not advertise over mDNS, so it needs a server URL or direct inbound connection. State and pairing data are owner-only. The CMake project pins `sendspin-cpp` v0.9.5 at tag `v0.9.5` (commit `b95cf854a784ed308b1f8fe9697f414b02768ddd`); target packaging and ABI support remain unverified.
 
 ## Alternatives Considered
 
@@ -99,7 +99,7 @@ The Podman Kodi smoke harness booted the add-on and exercised the mock HTTP API 
 
 Completed CLI probe on Bazzite 44 x86_64: verified the v0.3.0 archive SHA256, inspected its build metadata and glibc/runtime requirements, listed host audio outputs, and exercised `status`, `pause`, and unsupported `release_audio` against a null-output instance. The CLI does not satisfy Kodi's audio handoff or state contract.
 
-The project-owned `native/sendspin-kodi-backend` target builds on Bazzite 44 x86_64 with `sendspin-cpp` v0.9.3 at commit `91038b72892596b9ec0cccfec1b9e6ebc58ba148`. PortAudio and ALSA development RPM contents were staged under `/tmp`; no host packages were installed. The pinned upstream PortAudio sink and file-persistence example helpers are compiled directly from `examples/common`.
+The project-owned `native/sendspin-kodi-backend` target builds on Bazzite 44 x86_64 with `sendspin-cpp` v0.9.5 at tag `v0.9.5` (commit `b95cf854a784ed308b1f8fe9697f414b02768ddd`). PortAudio and ALSA development RPM contents were staged under `/tmp`; no host packages were installed. The pinned upstream PortAudio sink and file-persistence example helpers are compiled directly from `examples/common`.
 
 The backend passes version/help probes and a local process integration probe: Kodi launched it, observed socket readiness, verified initial scaled volume/mute and delay seeding, queried the Kodi-shaped state, changed volume/delay, released/reacquired audio, and stopped the child. No server was connected and no audio stream reached the DAC, so synchronization, real playback, and hardware handoff remain unverified.
 

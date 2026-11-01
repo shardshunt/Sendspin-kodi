@@ -32,7 +32,7 @@ FetchContent_MakeAvailable(portaudio)
 FetchContent_Declare(
     sendspin_cpp
     GIT_REPOSITORY https://github.com/Sendspin/sendspin-cpp.git
-    GIT_TAG 91038b72892596b9ec0cccfec1b9e6ebc58ba148
+    GIT_TAG v0.9.5
     GIT_SHALLOW FALSE
 )
 FetchContent_MakeAvailable(sendspin_cpp)

@@ -25,7 +25,7 @@ MA_IMAGE="${MA_IMAGE:-ghcr.io/music-assistant/server:latest}"
 MA_DATA_DIR="${MA_DATA_DIR:-$RUNTIME_DIR/music-assistant-data}"
 SENDSPIN_SERVER_URL="${SENDSPIN_SERVER_URL:-}"
 START_MUSIC_ASSISTANT="${START_MUSIC_ASSISTANT:-false}"
-ALSA_DEVICE="${ALSA_DEVICE:-hw:2,0}"
+ALSA_DEVICE="${ALSA_DEVICE:-}"
 KODI_PRIVILEGED="${KODI_PRIVILEGED:-false}"
 PODMAN_ROOTFUL="${PODMAN_ROOTFUL:-false}"
 ORIGINAL_DEFAULT_SINK=""
@@ -104,6 +104,11 @@ command -v podman >/dev/null 2>&1 || die "Podman is required"
 if [[ -z "$SENDSPIN_SERVER_URL" ]]; then
   [[ "$START_MUSIC_ASSISTANT" == true ]] && SENDSPIN_SERVER_URL="ws://127.0.0.1:8927/sendspin" || die "set SENDSPIN_SERVER_URL"
 fi
+if [[ -z "$ALSA_DEVICE" ]]; then
+  ALSA_DEVICE="$(python3 "$ROOT_DIR/tests/kodi/resolve_host_alsa_device.py")" \
+    || die "could not resolve the host's default ALSA output; set ALSA_DEVICE explicitly"
+  echo "Using host default audio device: $ALSA_DEVICE"
+fi
 [[ -d /dev/snd ]] || die "No /dev/snd on the host; provide an ALSA device or loopback device before running the full playback harness"
 
 trap 'diagnostics; cleanup' EXIT
@@ -159,7 +164,10 @@ security_args=(--security-opt label=disable)
 audio_group_args=()
 audio_gid=""
 if [[ -d /dev/snd ]]; then
-  audio_gid="$(stat -c '%g' /dev/snd/pcmC2D0p 2>/dev/null || true)"
+  alsa_card="${ALSA_DEVICE#hw:}"
+  alsa_card="${alsa_card%%,*}"
+  alsa_device="${ALSA_DEVICE##*,}"
+  audio_gid="$(stat -c '%g' "/dev/snd/pcmC${alsa_card}D${alsa_device}p" 2>/dev/null || true)"
 fi
 if [[ -n "$audio_gid" ]]; then
   audio_group_args+=(--group-add "$audio_gid")

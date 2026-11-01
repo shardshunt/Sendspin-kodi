@@ -11,7 +11,7 @@ MA_PLAYER_NAME="${MA_PLAYER_NAME:-Kodi}"
 MA_ALLOW_UNAVAILABLE="${MA_ALLOW_UNAVAILABLE:-false}"
 MA_API_TOKEN="${MA_API_TOKEN:-}"
 MA_API_TOKEN_FILE="${MA_API_TOKEN_FILE:-${HOME:-}/.config/sendspin-kodi/ma_api_token}"
-ALSA_DEVICE="${ALSA_DEVICE:-hw:2,0}"
+ALSA_DEVICE="${ALSA_DEVICE:-}"
 PODMAN_ROOTFUL="${PODMAN_ROOTFUL:-true}"
 AUTO_DIAGNOSTICS="${AUTO_DIAGNOSTICS:-true}"
 DIAGNOSTICS_TIMEOUT="${DIAGNOSTICS_TIMEOUT:-45}"
@@ -22,6 +22,11 @@ die() { echo "native playback test: $*" >&2; exit 1; }
 command -v curl >/dev/null || die "curl is required"
 command -v python3 >/dev/null || die "python3 is required"
 [[ -x "$HARNESS" ]] || die "native harness is missing"
+if [[ -z "$ALSA_DEVICE" ]]; then
+  ALSA_DEVICE="$(python3 "$ROOT_DIR/tests/kodi/resolve_host_alsa_device.py")" \
+    || die "could not resolve the host's default ALSA output; set ALSA_DEVICE explicitly"
+  echo "Using host default audio device: $ALSA_DEVICE"
+fi
 if [[ "$PODMAN_ROOTFUL" == true ]]; then
   sudo -v || die "sudo authentication is required for rootful Podman"
 fi
