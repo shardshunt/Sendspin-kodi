@@ -125,6 +125,9 @@ class SendspinServiceController:
         if self.server_url:
             command.extend(["--server", self.server_url])
 
+        backend_environment = os.environ.copy()
+        backend_environment["SENDSPIN_AUDIO_DEVICE"] = self.audio_device_id
+
         try:
             self.backend_process = subprocess.Popen(
                 command,
@@ -132,6 +135,7 @@ class SendspinServiceController:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                env=backend_environment,
             )
         except OSError as error:
             self.logger.error("Could not launch native backend %s: %s", self.backend_path, error)

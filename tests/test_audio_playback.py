@@ -223,6 +223,13 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
             },
             # Iteration 2: Playback continues and track info arrives (active playback, speed=1)
             {
+                "track": {"title": "Test Audio"},
+                "playback": {"speed": 1, "position": 2.0, "duration": 180},
+                "volume": {"volume": 30, "muted": False},
+                "audio": {"released": False},
+            },
+            # Iteration 3: Artist and album arrive after the title, without a title change.
+            {
                 "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
                 "playback": {"speed": 1, "position": 2.0, "duration": 180},
                 "volume": {"volume": 30, "muted": False},
@@ -352,12 +359,12 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
                 self.audio_device_setting_changed = False
 
             def abortRequested(self):
-                # We have 17 states (indices 0 to 16).
+                # We have 18 states (indices 0 to 17).
                 print(f"[TEST RUN] Monitor abortRequested checked. count={self.count}")
                 # Trigger a wake event while the Kodi-side session is active.
-                if self.count == 5:
+                if self.count == 6:
                     self.wake_event_triggered = True
-                if self.count >= 17:
+                if self.count >= 18:
                     return True
                 self.count += 1
                 return False
@@ -419,7 +426,8 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
 
         # 3. Verify Player operations:
         self.assertEqual(len(player.play_calls), 1, "Expected player.play to be called once")
-        self.assertEqual(len(player.update_info_tag_calls), 1, "Expected player.updateInfoTag to be called once")
+        self.assertEqual(len(player.update_info_tag_calls), 4, "Expected startup, enrichment, and reset updates")
+        self.assertEqual(player.update_info_tag_calls[0].tag.getArtist(), "Mock Artist")
         self.assertEqual(
             len(player.stop_calls), 1, "Expected player.stop to be called once (only on full stop, not pause)"
         )
@@ -465,6 +473,7 @@ class TestNativeBackendSupervisor(unittest.TestCase):
         controller.native_backend_available = True
         controller.server_url = "ws://sendspin.example:8927/sendspin"
         controller.player_name = "Kitchen"
+        controller.audio_device_id = "hw:1,10"
         controller.state_file = "/profile/sendspin/state.json"
         controller.control_socket_path = "/profile/sendspin/control.sock"
         controller.kodi.get_volume_state.return_value = {"volume": 80, "muted": True}
@@ -480,6 +489,7 @@ class TestNativeBackendSupervisor(unittest.TestCase):
 
         command = mock_popen.call_args.args[0]
         self.assertEqual(command[0], controller.backend_path)
+        self.assertEqual(mock_popen.call_args.kwargs["env"]["SENDSPIN_AUDIO_DEVICE"], "hw:1,10")
         self.assertIn("--server", command)
         self.assertIn("ws://sendspin.example:8927/sendspin", command)
         client.set_volume.assert_called_once_with(24, True)

@@ -100,7 +100,7 @@ async def run_session(controller: SendspinServiceController):
         last_volume_poll_time = 0.0
         last_seen_sendspin_volume_state = None
         last_seen_kodi_volume_state = None
-        last_seen_title = None
+        last_seen_metadata = None
         current_duration = 0
         audio_claimed = False
         dummy_playback_unavailable_logged = False
@@ -122,6 +122,10 @@ async def run_session(controller: SendspinServiceController):
             log.info("Starting dummy playback track...")
             player.play(dummy_path, list_item)
             await asyncio.sleep(1.0)
+            try:
+                player.updateInfoTag(list_item)
+            except Exception as e:
+                log.warning(f"Could not update playing info tag after playback start: {e}")
             # Route Kodi's playback stream to virtual null-sink to release physical audio hardware
             await asyncio.get_running_loop().run_in_executor(None, controller.route_kodi_to_null_sink)
             await asyncio.get_running_loop().run_in_executor(None, controller.suspend_physical_sinks, True)
@@ -137,7 +141,7 @@ async def run_session(controller: SendspinServiceController):
             nonlocal reset_retry_count
             nonlocal reset_wait_ticks
             nonlocal last_seen_sendspin_volume_state
-            nonlocal last_seen_title
+            nonlocal last_seen_metadata
             nonlocal current_duration
 
             log.warning("Resetting Kodi session state (%s)...", reason)
@@ -158,7 +162,7 @@ async def run_session(controller: SendspinServiceController):
             reset_retry_count = 0
             reset_wait_ticks = 0
             last_seen_sendspin_volume_state = None
-            last_seen_title = None
+            last_seen_metadata = None
             current_duration = 0
 
         async def handle_kodi_audio_device_change():
@@ -191,7 +195,7 @@ async def run_session(controller: SendspinServiceController):
                 pending_reset_resume = False
                 reset_retry_count = 0
                 reset_wait_ticks = 0
-                last_seen_title = None
+                last_seen_metadata = None
                 current_duration = 0
                 continue
 
@@ -436,8 +440,11 @@ async def run_session(controller: SendspinServiceController):
                 title = track_info.get("title")
                 artist = track_info.get("artist") or "Unknown Artist"
                 album = track_info.get("album") or "Unknown Album"
+                artwork_url = track_info.get("artwork_url")
+                metadata = (title, artist, album, artwork_url)
+                title_changed = last_seen_metadata is None or title != last_seen_metadata[0]
 
-                if title and title != last_seen_title:
+                if title and metadata != last_seen_metadata:
                     list_item.setLabel(title)
 
                     tag = list_item.getMusicInfoTag()
@@ -448,21 +455,31 @@ async def run_session(controller: SendspinServiceController):
 
                     list_item.setInfo("music", {"title": title, "artist": artist, "album": album, "mediatype": "song"})
 
-                    log.info(f"Track changed to: {tag.getArtist()} - {tag.getTitle()} ({tag.getAlbum()})")
-                    user_released_audio = False
+                    log.info(
+                        "%s: %s - %s (%s)",
+                        "Track changed to" if title_changed else "Track metadata updated",
+                        tag.getArtist(),
+                        tag.getTitle(),
+                        tag.getAlbum(),
+                    )
+                    if title_changed:
+                        user_released_audio = False
 
-                    thumb = track_info.get("artwork_url")
-                    if thumb:
-                        list_item.setArt({"thumb": thumb})
+                    if artwork_url:
+                        list_item.setArt({"thumb": artwork_url})
 
-                    if is_playing and is_kodi_playing:
+                    if is_kodi_playing:
                         try:
                             player.updateInfoTag(list_item)
                         except Exception as e:
                             log.warning(f"Could not update playing info tag: {e}")
-                    elif is_playing and (not audio_claimed or is_setting_enabled("require_dummy_playback")):
+                    elif (
+                        title_changed
+                        and is_playing
+                        and (not audio_claimed or is_setting_enabled("require_dummy_playback"))
+                    ):
                         await start_playback()
-                    last_seen_title = title
+                    last_seen_metadata = metadata
 
             # Handle seeking and duration sync
             if has_track and playback_state and is_kodi_playing:
