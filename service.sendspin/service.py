@@ -52,6 +52,7 @@ class SendspinServiceController:
         self.original_default_sink = None
         self.original_card_profiles = {}
         self._suppress_kodi_player_events_until = 0.0
+        self._kodi_pause_pending_until = 0.0
         self._last_applied_delay_ms = None
         self._profile_settings_missing_logged = False
         self._audio_claimed = False
@@ -909,15 +910,30 @@ class SendspinServiceController:
     def _should_forward_kodi_player_event(self) -> bool:
         return time.monotonic() >= self._suppress_kodi_player_events_until
 
-    def handle_kodi_pause(self) -> None:
-        if self._should_forward_kodi_player_event():
-            self.logger.info("Forwarding Kodi pause to Sendspin.")
-            self.control.pause()
+    def handle_kodi_pause(self) -> bool:
+        if not self._should_forward_kodi_player_event():
+            return False
+        if self.kodi_pause_is_pending():
+            return True
 
-    def handle_kodi_resume(self) -> None:
+        self._kodi_pause_pending_until = time.monotonic() + 5.0
+        if self.control.pause():
+            self.logger.info("Forwarded Kodi pause to Sendspin.")
+            return True
+
+        self._kodi_pause_pending_until = 0.0
+        self.logger.warning("Sendspin did not accept the Kodi pause command.")
+        return False
+
+    def kodi_pause_is_pending(self) -> bool:
+        return time.monotonic() < self._kodi_pause_pending_until
+
+    def handle_kodi_resume(self) -> bool:
+        self._kodi_pause_pending_until = 0.0
         if self._should_forward_kodi_player_event():
             self.logger.info("Forwarding Kodi resume to Sendspin.")
-            self.control.play()
+            return self.control.play()
+        return False
 
     def send_play(self) -> bool:
         return self.control.play()

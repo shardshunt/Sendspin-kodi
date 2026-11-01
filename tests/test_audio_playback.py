@@ -440,6 +440,47 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
 
 
 class TestNativeBackendSupervisor(unittest.TestCase):
+    def test_kodi_pause_waits_for_sendspin_state_and_reports_rejection(self):
+        controller = SendspinServiceController()
+        controller.control = MagicMock()
+        controller.control.pause.return_value = True
+
+        self.assertTrue(controller.handle_kodi_pause())
+        self.assertTrue(controller.kodi_pause_is_pending())
+        self.assertTrue(controller.handle_kodi_pause())
+        controller.control.pause.assert_called_once_with()
+
+        controller._kodi_pause_pending_until = 0.0
+        controller.control.pause.return_value = False
+        self.assertFalse(controller.handle_kodi_pause())
+        self.assertFalse(controller.kodi_pause_is_pending())
+
+    def test_kodi_resume_clears_pending_pause(self):
+        controller = SendspinServiceController()
+        controller.control = MagicMock()
+        controller._kodi_pause_pending_until = time.monotonic() + 5.0
+        controller.control.play.return_value = True
+
+        self.assertTrue(controller.handle_kodi_resume())
+        self.assertFalse(controller.kodi_pause_is_pending())
+
+    def test_kodi_pause_state_transition_forwards_once_and_resumes(self):
+        controller = MagicMock()
+
+        paused = session.forward_kodi_pause_state_change(controller, True, True, False)
+        self.assertTrue(paused)
+        controller.handle_kodi_pause.assert_called_once_with()
+
+        paused = session.forward_kodi_pause_state_change(controller, True, True, paused)
+        self.assertTrue(paused)
+        controller.handle_kodi_pause.assert_called_once_with()
+
+        paused = session.forward_kodi_pause_state_change(controller, True, False, paused)
+        self.assertFalse(paused)
+        controller.handle_kodi_resume.assert_called_once_with()
+
+        self.assertFalse(session.forward_kodi_pause_state_change(controller, False, False, paused))
+
     def test_architecture_aliases(self):
         self.assertEqual(SendspinServiceController._architecture_name("x86_64"), "x86_64")
         self.assertEqual(SendspinServiceController._architecture_name("amd64"), "x86_64")

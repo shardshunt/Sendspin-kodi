@@ -24,11 +24,21 @@ class SendspinKodiPlayer(xbmc.Player):
         super().__init__()
         self.controller = controller
 
-    def onPlayBackPaused(self):  # noqa: N802 - Kodi callback name
-        self.controller.handle_kodi_pause()
 
-    def onPlayBackResumed(self):  # noqa: N802 - Kodi callback name
-        self.controller.handle_kodi_resume()
+def forward_kodi_pause_state_change(
+    controller: SendspinServiceController,
+    is_kodi_playing: bool,
+    is_kodi_paused: bool,
+    previous_pause_state: bool,
+) -> bool:
+    if not is_kodi_playing:
+        return False
+    if is_kodi_paused != previous_pause_state:
+        if is_kodi_paused:
+            controller.handle_kodi_pause()
+        else:
+            controller.handle_kodi_resume()
+    return is_kodi_paused
 
 
 def get_state_volume(state: dict) -> tuple[int, bool] | None:
@@ -101,6 +111,7 @@ async def run_session(controller: SendspinServiceController):
         last_seen_sendspin_volume_state = None
         last_seen_kodi_volume_state = None
         last_seen_metadata = None
+        last_kodi_pause_state = False
         current_duration = 0
         audio_claimed = False
         dummy_playback_unavailable_logged = False
@@ -284,6 +295,9 @@ async def run_session(controller: SendspinServiceController):
                 except Exception as e:
                     log.warning(f"Could not read playing file: {e}")
             is_kodi_paused = xbmc.getCondVisibility("Player.Paused") if is_kodi_playing else False
+            last_kodi_pause_state = forward_kodi_pause_state_change(
+                controller, is_kodi_playing, is_kodi_paused, last_kodi_pause_state
+            )
 
             if is_kodi_playing:
                 user_released_audio = False
@@ -365,7 +379,7 @@ async def run_session(controller: SendspinServiceController):
                                 log.info("Kodi dummy playback is unavailable; continuing with native Sendspin audio.")
                                 dummy_playback_unavailable_logged = True
 
-                    if is_kodi_playing and is_kodi_paused:
+                    if is_kodi_playing and is_kodi_paused and not controller.kodi_pause_is_pending():
                         log.info("Sendspin playing: resuming Kodi dummy playback.")
                         controller.suppress_kodi_player_events()
                         try:
