@@ -199,6 +199,61 @@ static PaDeviceIndex select_output_device() {
     file(WRITE "${PORTAUDIO_SINK_SOURCE}" "${PORTAUDIO_SINK_TEXT}")
 endif()
 
+set(PORTAUDIO_SINK_HEADER "${sendspin_cpp_SOURCE_DIR}/examples/common/portaudio_sink.h")
+file(READ "${PORTAUDIO_SINK_HEADER}" PORTAUDIO_SINK_HEADER_TEXT)
+string(FIND "${PORTAUDIO_SINK_HEADER_TEXT}" "SENDSPIN_KODI_LAZY_PORTAUDIO_INIT" PORTAUDIO_LAZY_HEADER_MARKER)
+if(PORTAUDIO_LAZY_HEADER_MARKER EQUAL -1)
+    string(REPLACE
+        [=[    bool muted_{false};]=]
+        [=[    bool muted_{false};
+    bool portaudio_initialized_{false};
+    // SENDSPIN_KODI_LAZY_PORTAUDIO_INIT]=]
+        PORTAUDIO_SINK_HEADER_TEXT "${PORTAUDIO_SINK_HEADER_TEXT}")
+    file(WRITE "${PORTAUDIO_SINK_HEADER}" "${PORTAUDIO_SINK_HEADER_TEXT}")
+endif()
+
+file(READ "${PORTAUDIO_SINK_SOURCE}" PORTAUDIO_LAZY_TEXT)
+string(FIND "${PORTAUDIO_LAZY_TEXT}" "SENDSPIN_KODI_LAZY_PORTAUDIO_INIT" PORTAUDIO_LAZY_SOURCE_MARKER)
+if(PORTAUDIO_LAZY_SOURCE_MARKER EQUAL -1)
+    string(REPLACE
+        [=[PortAudioSink::PortAudioSink() : ring_buffer_(RING_BUFFER_CAPACITY) {
+    PaError err = Pa_Initialize();
+    if (err != paNoError) {
+        fprintf(stderr, "PortAudio init failed: %s\n", Pa_GetErrorText(err));
+    }
+}]=]
+        [=[// SENDSPIN_KODI_LAZY_PORTAUDIO_INIT: wait until Kodi releases the target device.
+PortAudioSink::PortAudioSink() : ring_buffer_(RING_BUFFER_CAPACITY) {}]=]
+        PORTAUDIO_LAZY_TEXT "${PORTAUDIO_LAZY_TEXT}")
+    string(REPLACE
+        [=[PortAudioSink::~PortAudioSink() {
+    stop();
+    Pa_Terminate();
+}]=]
+        [=[PortAudioSink::~PortAudioSink() {
+    stop();
+    if (portaudio_initialized_) {
+        Pa_Terminate();
+    }
+}]=]
+        PORTAUDIO_LAZY_TEXT "${PORTAUDIO_LAZY_TEXT}")
+    string(REPLACE
+        [=[bool PortAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample) {
+    stop();]=]
+        [=[bool PortAudioSink::configure(uint32_t sample_rate, uint8_t channels, uint8_t bits_per_sample) {
+    if (!portaudio_initialized_) {
+        PaError initialize_error = Pa_Initialize();
+        if (initialize_error != paNoError) {
+            fprintf(stderr, "PortAudio init failed: %s\n", Pa_GetErrorText(initialize_error));
+            return false;
+        }
+        portaudio_initialized_ = true;
+    }
+    stop();]=]
+        PORTAUDIO_LAZY_TEXT "${PORTAUDIO_LAZY_TEXT}")
+    file(WRITE "${PORTAUDIO_SINK_SOURCE}" "${PORTAUDIO_LAZY_TEXT}")
+endif()
+
 # The server's older schema calls the adjustable-delay command
 # set_static_delay and carries static_delay_ms; v0.9.3 used output_delay names.
 set(SENDSPIN_COMMAND_SOURCE "${sendspin_cpp_SOURCE_DIR}/src/protocol_messages.h")

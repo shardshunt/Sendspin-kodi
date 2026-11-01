@@ -56,27 +56,33 @@ Branch: `consider-senspin-cpp-instead-of-docker`
 - [x] Add integration coverage for the backend interface and playback/control state synchronization (`tests/kodi/native_playback_test.sh`).
 - [ ] Test startup, playback, pause/resume, stop/idle, shutdown, and unexpected backend exit for the new implementation.
 - [x] Test audio-device selection and release/reacquire while Kodi and Sendspin contend for audio on LibreELEC Generic x86_64 12.2.1.
+- [ ] Verify Kodi remains on HDMI4 while Sendspin is idle, routes Sendspin playback to HDMI4, and restores Kodi after pause. Idle-time handoff is removed; HDMI label matching is fixed. Set override `hw:1,10` to pin this box to HDMI4; device retest pending.
 - [x] Verify playback, volume updates, metadata updates, and Kodi player/UI state on the LibreELEC test device.
 - [x] Verify Kodi volume and mute controls on the LibreELEC test device.
 - [x] Verify Kodi-originated pause forwarding from KORE on LibreELEC Generic x86_64 12.2.1.
-- [ ] Map and verify Kodi/KORE next-track control; KORE Next currently targets the silent Kodi item and has no event mapping to Sendspin.
 - [ ] Measure playback synchronization/timing on target hardware.
 - [ ] Test clear failure behavior when the backend is missing, incompatible, or fails to start.
 - [ ] Run `ruff check --fix .` and `ruff format .` across the repository.
 - [x] Pass Ruff and Ruff-format commit hooks for the changed Python files.
 - [ ] Run `pre-commit run --all-files`.
-- [x] Run focused playback unit tests: `python3 -m unittest discover -s tests -p test_audio_playback.py` (10 tests).
-- [x] Run `python3 -m unittest discover -s tests` (12 tests, passed 2026-11-01).
+- [x] Run focused playback unit tests: `python3 -m unittest discover -s tests -p test_audio_playback.py` (12 tests).
+- [x] Run `python3 -m unittest discover -s tests` (14 tests, passed 2026-11-01).
 - [ ] Update and run applicable Kodi smoke/API tests for the new implementation; do not require Docker for these tests.
 - [ ] Perform and record physical-device testing for LibreELEC and representative Debian/Fedora systems.
 - [x] Record tested OS versions, CPU architectures, dependency versions, results, and known limitations.
 
 ### Recorded Device Results
 
-- LibreELEC Generic x86_64 12.2.1, Kodi Python 3.11.13 (2026-11-01): backend started, connected to Music Assistant, selected `hw:1,10` (HDA ATI HDMI / Panasonic-TV), and playback plus Kodi audio release/reacquire were observed. Kodi volume/mute, track metadata updates, and KORE pause forwarding worked; next-track control remains unsupported. First-play metadata refresh was also confirmed by the user.
+- LibreELEC Generic x86_64 12.2.1, Kodi Python 3.11.13 (2026-11-01): backend started, connected to Music Assistant, selected `hw:1,10` (HDA ATI HDMI / Panasonic-TV), and playback plus Kodi audio release/reacquire were observed. Kodi volume/mute, track metadata updates, and KORE pause forwarding worked. First-play metadata refresh was also confirmed by the user.
 - Kodi pause forwarding uses the polled Kodi paused-state transition, preserves a pending pause for up to five seconds, and reports backend rejection. Unit and LibreELEC device testing passed.
+- The 2026-11-01 logs exposed two routing issues: restoring the captured PulseAudio Bluetooth device, then treating Kodi's HDMI `DEV=0` as ALSA PCM 0. Restore now follows the target when the hardware override is set, and HDMI labels take precedence in ALSA mapping. Unit tests pass; HDMI4 device verification is pending with override `hw:1,10`.
+- A later idle-start log showed Kodi switching to Bluetooth before Sendspin playback began. Setup now leaves Kodi routing unchanged until the first active stream; unit tests pass, and on-device idle/play/pause verification is pending.
 - ELF inspection of the packaged backends showed requirements through `GLIBC_2.34` and `GLIBCXX_3.4.30`. The LibreELEC device above runs the x86_64 binary; aarch64/armv7 runtime compatibility and Debian/Fedora minimum versions remain unverified.
 - The native playback harness uses live Music Assistant and ALSA hardware. It is an integration test, but its hardware/device-specific result does not replace the remaining OS/architecture and lifecycle validation.
+
+### Deferred
+
+- KORE's native Next button mapping to Sendspin is deferred. KORE sends Kodi's `Player.GoTo(NEXT)` and has no custom button-action mapping in its preferences. The add-on's existing Next plugin/API command remains available to other callers.
 
 ## Completion Criteria
 

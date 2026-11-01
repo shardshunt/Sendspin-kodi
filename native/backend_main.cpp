@@ -203,7 +203,7 @@ struct KodiPlayerListener final : sendspin::PlayerRoleListener {
 
     sendspin::PortAudioSink& sink;
     sendspin::PlayerRole& player;
-    std::atomic<bool> released {false};
+    std::atomic<bool> released {true};
     bool stream_active = false;
 };
 
@@ -409,10 +409,6 @@ int main(int argc, char** argv) {
 
     sendspin::SendspinClient::set_log_level(sendspin::LogLevel::WARN);
     sendspin::PortAudioSink audio_sink;
-    if (sendspin::PortAudioSink::max_output_channels() == 0) {
-        std::fprintf(stderr, "No PortAudio output device is available\n");
-        return 1;
-    }
 
     sendspin::SendspinClientConfig config;
     config.name = options.name;

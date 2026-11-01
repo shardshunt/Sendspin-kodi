@@ -42,6 +42,7 @@ class SendspinServiceController:
         self._native_backend_retry_at = 0.0
         self.volume_scale = self._get_volume_scale(addon)
         self.audio_device_id = "0"
+        self.audio_device_override = False
         self.control = SendspinControlClient(
             control_url,
             socket_path=self.control_socket_path if self.native_backend_available else None,
@@ -312,6 +313,7 @@ class SendspinServiceController:
         self.original_kodi_device = device_string
         addon = xbmcaddon.Addon()
         override = addon.getSetting("audio_device_override")
+        self.audio_device_override = bool(override)
         if override:
             audio_device_id = override
         elif device_string:
@@ -450,20 +452,29 @@ class SendspinServiceController:
             # Filter global list to only devices on our matched card
             card_devices = [d for d in global_device_list if d["card"] == matched_card_idx]
 
-            # Step A: Look for exact numerical device match
-            for d in card_devices:
-                if d["device"] == target_dev_num:
-                    final_device_idx = d["device"]
-                    break
-
-            # Step B: If no exact index, search for the target number in the labels
-            if final_device_idx is None:
-                target_str = str(target_dev_num)
+            # Kodi's HDMI DEV number is often a port number, not ALSA's PCM
+            # index. Prefer its HDMI label before accepting a numeric match.
+            if "hdmi" in clean_dev:
                 for d in card_devices:
-                    # Matches if "4" appears in "HDMI 4 [Panasonic-TV]"
-                    if target_str in d["label"]:
+                    if re.search(rf"\bHDMI\s+{target_dev_num}\b", d["label"], re.IGNORECASE):
                         self.logger.info(
-                            f"Matched Kodi DEV={target_str} to ALSA Device {d['device']} via label: {d['label']}"
+                            f"Matched Kodi DEV={target_dev_num} to ALSA Device {d['device']} via label: {d['label']}"
+                        )
+                        final_device_idx = d["device"]
+                        break
+
+            if final_device_idx is None:
+                for d in card_devices:
+                    if d["device"] == target_dev_num:
+                        final_device_idx = d["device"]
+                        break
+
+            if final_device_idx is None:
+                device_number_pattern = rf"(?<!\d){target_dev_num}(?!\d)"
+                for d in card_devices:
+                    if re.search(device_number_pattern, d["label"]):
+                        self.logger.info(
+                            f"Matched Kodi DEV={target_dev_num} to ALSA Device {d['device']} via label: {d['label']}"
                         )
                         final_device_idx = d["device"]
                         break
@@ -533,16 +544,7 @@ class SendspinServiceController:
         self.update_sendspin_audio_device(self.original_kodi_device)
 
         if self.native_backend_available:
-            # PortAudio enumerates ALSA devices during backend startup. Make
-            # Kodi/PipeWire release the physical device first, otherwise the
-            # USB card can be absent from PortAudio's device list and the
-            # backend silently falls back to the motherboard output.
-            await asyncio.get_running_loop().run_in_executor(None, self.prepare_kodi_audio_for_sendspin)
-            for _ in range(30):
-                released = await asyncio.get_running_loop().run_in_executor(None, self.is_kodi_holding_pcm)
-                if not released:
-                    break
-                await asyncio.sleep(0.1)
+            self.logger.info("Leaving Kodi audio routing unchanged until Sendspin playback starts.")
             ready = await asyncio.get_running_loop().run_in_executor(None, self._start_native_backend)
             if not ready:
                 self.logger.error("Native backend failed to start; Kodi audio routing remains unchanged.")
@@ -843,11 +845,31 @@ class SendspinServiceController:
 
         if not self.original_kodi_device:
             return False
+        restore_device = self.original_kodi_device
+        if self.audio_device_override or any(name in restore_device.lower() for name in ("pulse", "pipewire")):
+            target_device = self._kodi_device_for_alsa_target(self.audio_device_id)
+            if target_device:
+                restore_device = target_device
+
         current_device = self.kodi.get_audio_output_device()
-        if current_device == self.original_kodi_device:
+        if current_device == restore_device:
             return True
-        self.logger.info(f"Restoring Kodi audio device to: {self.original_kodi_device}")
-        return bool(self._set_kodi_audio_device(self.original_kodi_device))
+        self.logger.info("Restoring Kodi audio device to: %s", restore_device)
+        return bool(self._set_kodi_audio_device(restore_device))
+
+    def _kodi_device_for_alsa_target(self, target_device: str) -> str | None:
+        if not target_device.startswith("hw:"):
+            return None
+
+        for option in self.kodi.get_audio_output_device_options():
+            value = option.get("value") if isinstance(option, dict) else None
+            if not isinstance(value, str) or "alsa:" not in value.lower():
+                continue
+            if not re.search(r"CARD=[^,|]+,DEV=\d+", value, re.IGNORECASE):
+                continue
+            if self._get_audio_device_id(value) == target_device:
+                return value
+        return None
 
     def prepare_kodi_audio_for_sendspin(self) -> None:
         device_text = (self.original_kodi_device or "").lower()

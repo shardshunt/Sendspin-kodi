@@ -560,12 +560,51 @@ class TestNativeBackendSupervisor(unittest.TestCase):
 
 
 class TestAudioDeviceMapping(unittest.TestCase):
+    def test_backend_setup_leaves_kodi_audio_untouched_until_playback(self):
+        controller = SendspinServiceController()
+        controller.kodi = MagicMock()
+        controller.kodi.get_audio_output_device.return_value = "ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI"
+        controller.native_backend_available = True
+        controller.update_sendspin_audio_device = MagicMock(return_value="hw:1,10")
+        controller.prepare_kodi_audio_for_sendspin = MagicMock()
+        controller.is_kodi_holding_pcm = MagicMock(return_value=True)
+        controller._start_native_backend = MagicMock(return_value=True)
+
+        asyncio.run(controller.setup())
+
+        controller.prepare_kodi_audio_for_sendspin.assert_not_called()
+        controller.is_kodi_holding_pcm.assert_not_called()
+        controller._start_native_backend.assert_called_once_with()
+
+    def test_restore_software_output_to_matching_alsa_device(self):
+        controller = SendspinServiceController()
+        controller.kodi = MagicMock()
+        controller.original_kodi_device = "PULSE:Default|Bluetooth Audio (PULSEAUDIO)"
+        controller.audio_device_id = "hw:1,10"
+        controller.audio_device_override = True
+        controller.original_streamsilence = None
+        controller.kodi.get_audio_output_device.return_value = controller.original_kodi_device
+        controller.kodi.get_audio_output_device_options.return_value = [
+            {"value": "ALSA:hdmi:CARD=PCH,DEV=0|HDA Intel PCH"},
+            {"value": "ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI"},
+        ]
+        controller.restore_physical_card_profiles = MagicMock()
+        controller.restore_default_sink = MagicMock()
+        controller.suspend_physical_sinks = MagicMock()
+        controller._get_audio_device_id = MagicMock(
+            side_effect=lambda device: "hw:1,10" if "DEV=4" in device else "hw:0,3"
+        )
+
+        self.assertTrue(controller.restore_kodi_audio_device())
+
+        controller.kodi.set_audio_output_device.assert_called_once_with("ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI")
+
     @patch("subprocess.run")
     def test_get_audio_device_id(self, mock_run):
         # Mock aplay -l output
         mock_aplay_output = (
             "**** List of PLAYBACK Hardware Devices ****\n"
-            "card 0: PCH [HDA Intel PCH], device 0: ALC3246 Analog [ALC3246 Analog]\n"
+            "card 0: PCH [HDA Intel PCH], device 0: ALC700 Analog [ALC700 Analog]\n"
             "  Subdevices: 1/1\n"
             "  Subdevice #0: subdevice #0\n"
             "card 0: PCH [HDA Intel PCH], device 3: HDMI 0 [HDMI 0]\n"
@@ -600,6 +639,10 @@ class TestAudioDeviceMapping(unittest.TestCase):
             self.assertEqual(controller._get_audio_device_id("PIPEWIRE:Default|Default Output Device (PIPEWIRE)"), "8")
             self.assertEqual(controller._get_audio_device_id("ALSA:default"), "8")
             self.assertEqual(controller._get_audio_device_id("ALSA:sysdefault"), "8")
+            self.assertEqual(controller._get_audio_device_id("ALSA:hdmi:CARD=PCH,DEV=0|HDA Intel PCH"), "hw:0,3")
+
+            # Kodi's HDMI DEV number can differ from ALSA's PCM index.
+            self.assertEqual(controller._get_audio_device_id("ALSA:hdmi:CARD=PCH,DEV=0|HDA Intel PCH"), "hw:0,3")
 
             # A numeric fallback is resolved to a stable raw ALSA identity
             # when that position exists in the current hardware list.
