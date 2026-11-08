@@ -6,7 +6,8 @@ names are `x86_64`, `aarch64`, and `armv7`. The service selects the directory
 matching `platform.machine()` and falls back to the legacy flat path for
 backwards compatibility.
 
-Build and stage a native backend from the repository root with:
+For single-architecture development or device testing, build and stage one
+backend from the repository root with:
 
 ```bash
 NATIVE_ARCH=x86_64 scripts/build_native_backend_ubuntu_container.sh
@@ -26,9 +27,15 @@ scripts/build_native_backends_all.sh
 Build only selected targets with:
 
 ```bash
-NATIVE_ARCHES="x86_64 aarch64" scripts/build_native_backends_all.sh
+NATIVE_ARCHES=x86_64 scripts/build_native_backends_all.sh
 ```
 
+Selected-architecture builds are for development and target-device testing
+only. Before any GitHub release, always run the full default matrix. Only a
+successful build of `x86_64`, `aarch64`, and `armv7` records release validation;
+the release packager verifies that the manifest matches the current native
+sources and all packaged binaries. `--force` cannot bypass this check.
+
 The native backend is intentionally ignored by Git because binaries are
-target-specific build artifacts. The release workflow builds each target
+target-specific build artifacts. The release workflow builds the full matrix
 before creating the add-on ZIP.

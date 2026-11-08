@@ -18,16 +18,26 @@ The recommended build uses a containerized Ubuntu 22.04 LTS cross-compilation en
 # Build the complete multi-arch matrix (x86_64, aarch64, armv7):
 scripts/build_native_backends_all.sh
 
-# Or build a specific target:
+# Development-only build for one architecture (does not qualify for release):
+NATIVE_ARCHES=x86_64 scripts/build_native_backends_all.sh
+
+# Or build a single cross-compiled target directly:
 NATIVE_ARCH=aarch64 scripts/build_native_backend_ubuntu_container.sh
 ```
+
+Always run the complete matrix before GitHub publishing. The full build records
+the source fingerprint and hashes of all three packaged binaries; `release.py`
+rejects missing or stale matrix results, including with `--force`. A selected
+architecture build is only for local development and device testing.
 
 Compiled executables are staged per architecture under:
 - `service.sendspin/resources/bin/x86_64/sendspin-kodi-backend`
 - `service.sendspin/resources/bin/aarch64/sendspin-kodi-backend`
 - `service.sendspin/resources/bin/armv7/sendspin-kodi-backend`
 
-The direct `scripts/build_native_backend.sh` command can also be run directly on the host or inside a development container.
+The direct `scripts/build_native_backend.sh` command can also be run on the host
+or inside a development container for development only; it does not satisfy the
+GitHub release matrix gate.
 
 ## Deployment & Testing on Kodi / LibreELEC
 
@@ -144,13 +154,13 @@ scripts/build_native_backends_all.sh
 Package and validate the add-on using `release.py`:
 
 ```bash
-# Validate git cleanliness, versioning, and presence of all native backends (x86_64, aarch64, armv7):
+# Validate git cleanliness, versioning, and a fresh full-architecture build:
 python scripts/release.py --check --token GITHUB_TOKEN
 
 # Publish a GitHub release:
 python scripts/release.py --publish --token GITHUB_TOKEN
 
-# Force-publish (bypassing non-critical git check failures):
+# Force-publish despite non-critical checks; native matrix validation is never bypassed:
 python scripts/release.py --publish --force --token GITHUB_TOKEN
 ```
 

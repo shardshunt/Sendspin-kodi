@@ -48,19 +48,31 @@ python3 scripts/get_libs.py
 
 ## 4. When Building the Native Backend
 
-Build it without installing the toolchain on the host:
+Build all supported architectures before GitHub publishing, without installing
+the toolchain on the host:
 
 ```bash
-scripts/build_native_backend_container.sh
+scripts/build_native_backends_all.sh
 ```
+
+For development-only builds or target-specific testing, select an architecture:
+
+```bash
+NATIVE_ARCHES=x86_64 scripts/build_native_backends_all.sh
+```
+
+Selected builds do not create the full-matrix release record. `scripts/release.py`
+requires a current record and matching binaries; even `--force` cannot bypass it.
 
 ---
 
 ## 5. Before Release or Version Bumps
 
-Verify CalVer versioning, metadata sync (`addon.xml` vs `pyproject.toml`), and ZIP packaging:
+Run the full backend matrix first, then verify CalVer versioning, metadata sync
+(`addon.xml` vs `pyproject.toml`), the matrix record, and ZIP packaging:
 
 ```bash
+scripts/build_native_backends_all.sh
 python3 scripts/release.py --check
 ```
 

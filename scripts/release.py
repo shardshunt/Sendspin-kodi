@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,13 @@ ADDON_XML = ADDON_DIR / "addon.xml"
 SETTINGS_XML = ADDON_DIR / "resources" / "settings.xml"
 NATIVE_BACKEND_ROOT = ADDON_DIR / "resources" / "bin"
 NATIVE_ARCHITECTURES = ("x86_64", "aarch64", "armv7")
+NATIVE_MATRIX_MANIFEST = ROOT / "build" / "native-backend-matrix.json"
+NATIVE_BUILD_INPUTS = (
+    Path("Containerfile.native-build-ubuntu"),
+    Path("scripts/build_native_backend.sh"),
+    Path("scripts/build_native_backend_ubuntu_container.sh"),
+    Path("scripts/build_native_backends_all.sh"),
+)
 PYPROJECT = ROOT / "pyproject.toml"
 ASSET_NAME = "service.sendspin.zip"
 ZIP_PATH = ROOT / ASSET_NAME
@@ -107,6 +115,83 @@ def validate_versions() -> tuple[str, str, list[str]]:
 
 def tag_for(version: str, tag_override: str | None = None) -> str:
     return tag_override or f"v{version}"
+
+
+def native_source_fingerprint(source_root: Path = ROOT) -> str:
+    inputs = sorted(
+        [path for path in (source_root / "native").rglob("*") if path.is_file()]
+        + [source_root / relative_path for relative_path in NATIVE_BUILD_INPUTS]
+    )
+    digest = hashlib.sha256()
+    for path in inputs:
+        if not path.is_file():
+            raise ReleaseError(f"Missing native build input {path}")
+        relative_path = path.relative_to(source_root).as_posix().encode("utf-8")
+        digest.update(relative_path + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+def write_native_backend_matrix_manifest(
+    backend_root: Path = NATIVE_BACKEND_ROOT,
+    manifest_path: Path = NATIVE_MATRIX_MANIFEST,
+    source_root: Path = ROOT,
+) -> None:
+    binary_hashes: dict[str, str] = {}
+    for architecture in NATIVE_ARCHITECTURES:
+        backend = backend_root / architecture / "sendspin-kodi-backend"
+        if not backend.is_file() or not os.access(backend, os.X_OK):
+            raise ReleaseError(f"Missing executable native backend for {architecture}: {backend}")
+        binary_hashes[architecture] = hashlib.sha256(backend.read_bytes()).hexdigest()
+
+    manifest = {
+        "format": 1,
+        "architectures": list(NATIVE_ARCHITECTURES),
+        "source_sha256": native_source_fingerprint(source_root),
+        "binaries": binary_hashes,
+    }
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+    temporary_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    temporary_path.replace(manifest_path)
+
+
+def native_backend_matrix_errors(
+    backend_root: Path = NATIVE_BACKEND_ROOT,
+    manifest_path: Path = NATIVE_MATRIX_MANIFEST,
+    source_root: Path = ROOT,
+) -> list[str]:
+    if not manifest_path.is_file():
+        return ["Full native architecture build has not been recorded; run scripts/build_native_backends_all.sh"]
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"Could not read native build matrix manifest: {exc}"]
+    if not isinstance(manifest, dict):
+        return ["Native build matrix manifest has an invalid structure"]
+
+    errors: list[str] = []
+    if manifest.get("format") != 1 or manifest.get("architectures") != list(NATIVE_ARCHITECTURES):
+        errors.append("Native build manifest does not certify the complete supported architecture matrix")
+
+    try:
+        if manifest.get("source_sha256") != native_source_fingerprint(source_root):
+            errors.append("Native build manifest is stale; native sources or build scripts changed")
+    except ReleaseError as exc:
+        errors.append(str(exc))
+
+    recorded_hashes = manifest.get("binaries")
+    if not isinstance(recorded_hashes, dict):
+        errors.append("Native build manifest has no binary hashes")
+        recorded_hashes = {}
+
+    for architecture in NATIVE_ARCHITECTURES:
+        backend = backend_root / architecture / "sendspin-kodi-backend"
+        if not backend.is_file() or not os.access(backend, os.X_OK):
+            errors.append(f"Missing executable native backend for {architecture}")
+        elif recorded_hashes.get(architecture) != hashlib.sha256(backend.read_bytes()).hexdigest():
+            errors.append(f"Native backend for {architecture} differs from the recorded full-matrix build")
+    return errors
 
 
 def repository() -> tuple[str, str]:
@@ -279,6 +364,15 @@ def run_checks(
 
     # 3. Build and Layout Validation
     zip_path = None
+    matrix_errors = native_backend_matrix_errors()
+    print_status(
+        "Native Backend Matrix",
+        not matrix_errors,
+        "; ".join(matrix_errors) if matrix_errors else "All architectures match the latest full build",
+    )
+    if matrix_errors:
+        all_passed = False
+
     try:
         zip_path = create_zip()
         print_status("Zip Creation", True, zip_path.name)
@@ -298,6 +392,9 @@ def run_checks(
 def create_zip() -> Path:
     if not ADDON_DIR.is_dir():
         raise ReleaseError(f"Missing addon directory {ADDON_DIR.relative_to(ROOT)}")
+    matrix_errors = native_backend_matrix_errors()
+    if matrix_errors:
+        raise ReleaseError("Native backend matrix validation failed: " + "; ".join(matrix_errors))
     missing_backends = [
         architecture
         for architecture in NATIVE_ARCHITECTURES
@@ -421,10 +518,24 @@ def main() -> int:
         help="validate versions, check the GitHub release tag is unused, and build the release zip",
     )
     parser.add_argument("--publish", action="store_true", help="create the GitHub release and upload the release zip")
+    parser.add_argument(
+        "--record-native-backend-matrix",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--tag", help="override the release tag; defaults to v<version>")
     parser.add_argument("--token", help="GitHub API token (overrides GITHUB_TOKEN env var)")
     parser.add_argument("--force", action="store_true", help="force publish even if validation checks fail")
     args = parser.parse_args()
+
+    if args.record_native_backend_matrix:
+        try:
+            write_native_backend_matrix_manifest()
+        except ReleaseError as exc:
+            print_status("Native Backend Matrix", False, str(exc))
+            return 1
+        print_status("Native Backend Matrix", True, "Recorded complete architecture build")
+        return 0
 
     if args.check == args.publish:
         parser.error("choose exactly one of --check or --publish")

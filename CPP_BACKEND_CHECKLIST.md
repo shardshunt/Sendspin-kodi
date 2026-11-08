@@ -65,6 +65,7 @@ Branch: `consider-senspin-cpp-instead-of-docker`
 - [ ] Run `ruff check --fix .` and `ruff format .` across the repository.
 - [x] Pass Ruff and Ruff-format commit hooks for the changed Python files.
 - [ ] Run `pre-commit run --all-files`.
+- [x] Verify GitHub release packaging requires a current full x86_64/aarch64/armv7 build record and cannot be bypassed with `--force`.
 - [x] Run focused playback unit tests: `python3 -m unittest discover -s tests -p test_audio_playback.py` (12 tests).
 - [x] Run `python3 -m unittest discover -s tests` (14 tests, passed 2026-11-01).
 - [ ] Update and run applicable Kodi smoke/API tests for the new implementation; do not require Docker for these tests.
