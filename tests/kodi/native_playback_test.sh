@@ -15,12 +15,14 @@ ALSA_DEVICE="${ALSA_DEVICE:-}"
 PODMAN_ROOTFUL="${PODMAN_ROOTFUL:-true}"
 AUTO_DIAGNOSTICS="${AUTO_DIAGNOSTICS:-true}"
 DIAGNOSTICS_TIMEOUT="${DIAGNOSTICS_TIMEOUT:-45}"
+PLAYBACK_DURATION="${PLAYBACK_DURATION:-20}"
 KODI_CONTAINER="${KODI_CONTAINER:-sendspin-kodi-native-test}"
 HARNESS="$ROOT_DIR/tests/kodi/native_harness.sh"
 
 die() { echo "native playback test: $*" >&2; exit 1; }
 command -v curl >/dev/null || die "curl is required"
 command -v python3 >/dev/null || die "python3 is required"
+command -v timeout >/dev/null || die "timeout is required"
 [[ -x "$HARNESS" ]] || die "native harness is missing"
 if [[ -z "$ALSA_DEVICE" ]]; then
   ALSA_DEVICE="$(python3 "$ROOT_DIR/tests/kodi/resolve_host_alsa_device.py")" \
@@ -100,8 +102,29 @@ audio_diagnostics() {
   echo "--- End native audio diagnostics ---"
 }
 
+stop_playback() {
+  if [[ -n "$MA_PLAYER_ID" && -n "$MA_API_TOKEN" ]]; then
+    local stop_args player_args
+    stop_args="$(python3 - "$MA_PLAYER_ID" <<'PY'
+import json
+import sys
+print(json.dumps({"queue_id": sys.argv[1]}))
+PY
+)"
+    ma_call player_queues/stop "$stop_args" >/dev/null 2>&1 || true
+    player_args="$(python3 - "$MA_PLAYER_ID" <<'PY'
+import json
+import sys
+print(json.dumps({"player_id": sys.argv[1]}))
+PY
+)"
+    ma_call players/cmd/stop "$player_args" >/dev/null 2>&1 || true
+  fi
+}
+
 HARNESS_PID=""
 cleanup() {
+  stop_playback
   if [[ -n "$HARNESS_PID" ]] && kill -0 "$HARNESS_PID" 2>/dev/null; then
     kill -TERM "$HARNESS_PID" 2>/dev/null || true
     wait "$HARNESS_PID" 2>/dev/null || true
@@ -230,24 +253,37 @@ then
 fi
 
 echo "Native playback test is running: $MA_QUERY"
-echo "Press Ctrl-C to stop."
-if [[ "$AUTO_DIAGNOSTICS" == true ]]; then
-  echo "Waiting for native playback before collecting diagnostics..."
-  if wait_for_kodi_log "Acquired Sendspin audio output" "$DIAGNOSTICS_TIMEOUT"; then
+echo "Playback will run for ~${PLAYBACK_DURATION}s before finishing up (press Ctrl-C to stop early)."
+echo "Waiting for native playback before collecting diagnostics..."
+if wait_for_kodi_log "Acquired Sendspin audio output" "$DIAGNOSTICS_TIMEOUT"; then
+  if [[ "$AUTO_DIAGNOSTICS" == true ]]; then
     # Give the backend a short opportunity to open the stream and begin
     # consuming audio before taking the snapshot.
     sleep 2
     audio_diagnostics
-  else
-    echo "Native playback did not reach the audio-acquired milestone within ${DIAGNOSTICS_TIMEOUT}s."
+  fi
+else
+  echo "Native playback did not reach the audio-acquired milestone within ${DIAGNOSTICS_TIMEOUT}s."
+  if [[ "$AUTO_DIAGNOSTICS" == true ]]; then
     audio_diagnostics
   fi
+  die "Native playback failed to start within ${DIAGNOSTICS_TIMEOUT}s"
 fi
-if [[ "$PODMAN_ROOTFUL" == true ]]; then
-  sudo -n podman exec "$KODI_CONTAINER" sh -c \
-    'tail -f /config/.kodi/temp/kodi.log | grep --line-buffered -Ei "Sendspin|connected|playing|track|stream|error"'
-else
-  podman exec "$KODI_CONTAINER" sh -c \
-    'tail -f /config/.kodi/temp/kodi.log | grep --line-buffered -Ei "Sendspin|connected|playing|track|stream|error"'
+
+play_time="$PLAYBACK_DURATION"
+if [[ "$AUTO_DIAGNOSTICS" == true ]]; then
+  play_time=$(( PLAYBACK_DURATION > 2 ? PLAYBACK_DURATION - 2 : 0 ))
 fi
-wait "$HARNESS_PID"
+
+if (( play_time > 0 )); then
+  echo "Streaming playback logs for ${play_time}s..."
+  if [[ "$PODMAN_ROOTFUL" == true ]]; then
+    timeout --kill-after=2s "${play_time}s" sudo -n podman exec "$KODI_CONTAINER" sh -c \
+      'tail -f /config/.kodi/temp/kodi.log | grep --line-buffered -Ei "Sendspin|connected|playing|track|stream|error"' || true
+  else
+    timeout --kill-after=2s "${play_time}s" podman exec "$KODI_CONTAINER" sh -c \
+      'tail -f /config/.kodi/temp/kodi.log | grep --line-buffered -Ei "Sendspin|connected|playing|track|stream|error"' || true
+  fi
+fi
+
+echo "Playback test complete (${PLAYBACK_DURATION}s). Finishing up..."

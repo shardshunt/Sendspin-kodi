@@ -111,7 +111,13 @@ if [[ -z "$ALSA_DEVICE" ]]; then
 fi
 [[ -d /dev/snd ]] || die "No /dev/snd on the host; provide an ALSA device or loopback device before running the full playback harness"
 
-trap 'diagnostics; cleanup' EXIT
+clean_shutdown=false
+on_signal() {
+  clean_shutdown=true
+  exit 0
+}
+trap on_signal TERM INT
+trap '[[ "$clean_shutdown" == true ]] || diagnostics; cleanup' EXIT
 cleanup
 cleanup_runtime
 mkdir -p "$RUNTIME_ADDON_DIR/resources/bin" "$RUNTIME_USERDATA_DIR/addon_data/service.sendspin" "$MA_DATA_DIR"
@@ -133,13 +139,13 @@ with open(path, "w", encoding="utf-8") as output:
     )
 PY
 
-python3 - "$RUNTIME_USERDATA_DIR/addon_data/service.sendspin/settings.xml" "$SENDSPIN_SERVER_URL" <<'PY'
+python3 - "$RUNTIME_USERDATA_DIR/addon_data/service.sendspin/settings.xml" "$SENDSPIN_SERVER_URL" "$ALSA_DEVICE" <<'PY'
 import sys
 import xml.etree.ElementTree as ET
-path, server_url = sys.argv[1:]
+path, server_url, alsa_device = sys.argv[1:]
 tree = ET.parse(path)
 root = tree.getroot()
-for setting_id, value in {"server_url": server_url, "backend_path": "", "control_url": "http://127.0.0.1:59999", "audio_device_override": ""}.items():
+for setting_id, value in {"server_url": server_url, "backend_path": "", "control_url": "http://127.0.0.1:59999", "audio_device_override": alsa_device}.items():
     setting = root.find(f"setting[@id='{setting_id}']")
     if setting is None:
         setting = ET.SubElement(root, "setting", {"id": setting_id})
