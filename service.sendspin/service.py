@@ -963,6 +963,12 @@ class SendspinServiceController:
     def send_pause(self) -> bool:
         return self.control.pause()
 
+    def send_stop(self) -> bool:
+        if hasattr(self.control, "stop"):
+            return self.control.stop()
+        self.logger.warning("Sendspin backend does not support a stop command; pausing instead.")
+        return self.control.pause()
+
     def send_play_pause(self) -> bool:
         return self.control.toggle_play_pause()
 

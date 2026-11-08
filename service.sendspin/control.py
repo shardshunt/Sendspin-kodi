@@ -31,6 +31,9 @@ class SendspinControlClient:
     def pause(self) -> bool:
         return self.command("pause")
 
+    def stop(self) -> bool:
+        return self.command("stop")
+
     def toggle_play_pause(self) -> bool:
         return self.command("toggle_play_pause")
 

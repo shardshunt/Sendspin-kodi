@@ -20,9 +20,14 @@ def is_setting_enabled(name: str, default: bool = True) -> bool:
 
 
 class SendspinKodiPlayer(xbmc.Player):
-    def __init__(self, controller: SendspinServiceController):
+    def __init__(self, controller: SendspinServiceController, monitor):
         super().__init__()
         self.controller = controller
+        self.monitor = monitor
+
+    def onPlayBackStopped(self):  # noqa: N802 - Kodi callback name
+        if self.controller._should_forward_kodi_player_event():
+            self.monitor.stop_event_triggered = True
 
 
 def forward_kodi_pause_state_change(
@@ -39,6 +44,23 @@ def forward_kodi_pause_state_change(
         else:
             controller.handle_kodi_resume()
     return is_kodi_paused
+
+
+def kodi_dummy_stop_confirmed(
+    dummy_was_playing: bool,
+    dummy_is_playing: bool,
+    sendspin_is_playing: bool,
+    user_released_audio: bool,
+    missing_seconds: float,
+    grace_seconds: float = 1.0,
+) -> bool:
+    return (
+        dummy_was_playing
+        and not dummy_is_playing
+        and sendspin_is_playing
+        and not user_released_audio
+        and missing_seconds >= grace_seconds
+    )
 
 
 def get_state_volume(state: dict) -> tuple[int, bool] | None:
@@ -80,12 +102,17 @@ class SendspinMonitor(xbmc.Monitor):
         self.controller = controller
         self.log = log
         self.wake_event_triggered = False
+        self.stop_event_triggered = False
         self.audio_device_setting_changed = False
 
     def onNotification(self, sender, method, data):  # noqa: N802 - Kodi callback name
         if method == "System.OnWake":
             self.log.info("System wake notification received.")
             self.wake_event_triggered = True
+        elif method in {"Player.OnStop", "Player.OnAVStop", "Player.OnPlayBackStopped"}:
+            if self.controller._should_forward_kodi_player_event():
+                self.log.info("Kodi playback stop notification received.")
+                self.stop_event_triggered = True
 
     def onSettingsChanged(self):  # noqa: N802 - Kodi callback name
         self.audio_device_setting_changed = True
@@ -101,7 +128,7 @@ async def run_session(controller: SendspinServiceController):
         await controller.setup()
 
         monitor = SendspinMonitor(controller, log)
-        player = SendspinKodiPlayer(controller)
+        player = SendspinKodiPlayer(controller, monitor)
         dummy_path = os.path.join(ADDON_PATH, "resources", "silent.mp3")
 
         rewind_before_end_seconds = 5.0
@@ -117,6 +144,9 @@ async def run_session(controller: SendspinServiceController):
         dummy_playback_unavailable_logged = False
         paused_ticks = 0
         user_released_audio = False
+        stop_requested = False
+        dummy_playback_was_active = False
+        dummy_playback_missing_since = None
         pending_reset_resume = False
         reset_retry_count = 0
         reset_wait_ticks = 0
@@ -217,6 +247,31 @@ async def run_session(controller: SendspinServiceController):
                 connection_seen = False
                 connection_lost_since = None
 
+            if monitor.stop_event_triggered:
+                monitor.stop_event_triggered = False
+                stop_requested = True
+                dummy_playback_was_active = False
+                dummy_playback_missing_since = None
+                log.info("Processing Kodi stop request; stopping Sendspin playback and releasing audio.")
+                if controller.native_backend_available:
+                    controller.send_stop()
+                if audio_claimed:
+                    await asyncio.get_running_loop().run_in_executor(None, controller.release_sendspin_audio_to_kodi)
+                audio_claimed = False
+                user_released_audio = True
+                pending_reset_resume = False
+                reset_retry_count = 0
+                reset_wait_ticks = 0
+                last_seen_metadata = None
+                paused_ticks = 0
+                try:
+                    if player.isPlaying() and "silent.mp3" in player.getPlayingFile():
+                        controller.suppress_kodi_player_events()
+                        player.stop()
+                except Exception as e:
+                    log.warning(f"Could not stop the dummy Kodi player after manual stop: {e}")
+                continue
+
             was_audio_claimed_before = audio_claimed
             loop_time = asyncio.get_running_loop().time()
             sendspin_state = await asyncio.get_running_loop().run_in_executor(None, controller.get_sendspin_state)
@@ -261,6 +316,13 @@ async def run_session(controller: SendspinServiceController):
                 speed = 0.0
             is_playing = audio_active or speed > 0.0
 
+            if stop_requested:
+                if is_playing:
+                    await asyncio.sleep(poll_interval_seconds)
+                    continue
+                log.info("Sendspin backend confirmed stopped playback.")
+                stop_requested = False
+
             if pending_reset_resume:
                 paused_ticks = 0
                 if audio_state.get("released", False):
@@ -298,6 +360,30 @@ async def run_session(controller: SendspinServiceController):
             last_kodi_pause_state = forward_kodi_pause_state_change(
                 controller, is_kodi_playing, is_kodi_paused, last_kodi_pause_state
             )
+
+            if is_kodi_playing:
+                dummy_playback_was_active = True
+                dummy_playback_missing_since = None
+            elif not is_playing:
+                dummy_playback_was_active = False
+                dummy_playback_missing_since = None
+            elif dummy_playback_was_active and not user_released_audio:
+                if dummy_playback_missing_since is None:
+                    dummy_playback_missing_since = loop_time
+                    log.info("Kodi dummy player disappeared while Sendspin is playing; checking for a transient gap.")
+                elif kodi_dummy_stop_confirmed(
+                    dummy_playback_was_active,
+                    is_kodi_playing,
+                    is_playing,
+                    user_released_audio,
+                    loop_time - dummy_playback_missing_since,
+                ):
+                    log.info("Kodi dummy player stop confirmed by polling; stopping Sendspin playback.")
+                    monitor.stop_event_triggered = True
+                    continue
+
+                await asyncio.sleep(poll_interval_seconds)
+                continue
 
             if is_kodi_playing:
                 user_released_audio = False

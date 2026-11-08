@@ -355,6 +355,8 @@ std::string handle_control_request(const std::string& request, sendspin::Sendspi
         transport_command.command = sendspin::SendspinControllerCommand::PLAY;
     } else if (command == "pause") {
         transport_command.command = sendspin::SendspinControllerCommand::PAUSE;
+    } else if (command == "stop") {
+        transport_command.command = sendspin::SendspinControllerCommand::STOP;
     } else if (command == "next") {
         transport_command.command = sendspin::SendspinControllerCommand::NEXT;
     } else if (command == "previous") {

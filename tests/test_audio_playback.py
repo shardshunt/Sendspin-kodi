@@ -3,9 +3,11 @@
 import asyncio
 import os
 import sys
+import types
 import unittest
 import logging
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 # Configure standard logging to show detailed output and catch hidden errors
@@ -356,6 +358,7 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.count = 0
                 self.wake_event_triggered = False
+                self.stop_event_triggered = False
                 self.audio_device_setting_changed = False
 
             def abortRequested(self):
@@ -437,6 +440,79 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_client.play.call_count, 2, "Expected play to be called exactly twice")
 
         print("[TEST HARNESS] All assertions passed successfully!")
+
+    def test_kodi_stop_notification_marks_stop_request(self):
+        session_path = Path(__file__).resolve().parents[1] / "service.sendspin" / "session.py"
+
+        class RealMonitor:
+            def __init__(self):
+                pass
+
+        class RealPlayer:
+            def __init__(self):
+                pass
+
+        class RealAddon:
+            def getSetting(self, name):
+                return ""
+
+            def getAddonInfo(self, name):
+                if name == "path":
+                    return "/dummy/addon/path"
+                return ""
+
+        namespace = {
+            "__name__": "fresh_session_under_test",
+            "xbmc": types.SimpleNamespace(
+                Monitor=RealMonitor, Player=RealPlayer, executebuiltin=lambda *args, **kwargs: None
+            ),
+            "xbmcaddon": types.SimpleNamespace(Addon=RealAddon),
+            "xbmcgui": types.SimpleNamespace(ListItem=MockListItem),
+            "logger": logging.getLogger("fresh_session_under_test"),
+            "os": os,
+            "asyncio": asyncio,
+        }
+
+        fake_xbmc_module = types.ModuleType("xbmc")
+        fake_xbmc_module.Monitor = RealMonitor
+        fake_xbmc_module.Player = RealPlayer
+        fake_xbmc_module.executebuiltin = lambda *args, **kwargs: None
+
+        fake_xbmcaddon_module = types.ModuleType("xbmcaddon")
+        fake_xbmcaddon_module.Addon = RealAddon
+
+        fake_xbmcgui_module = types.ModuleType("xbmcgui")
+        fake_xbmcgui_module.ListItem = MockListItem
+
+        with patch.dict(
+            sys.modules, {"xbmc": fake_xbmc_module, "xbmcaddon": fake_xbmcaddon_module, "xbmcgui": fake_xbmcgui_module}
+        ):
+            with open(session_path, encoding="utf-8") as handle:
+                exec(handle.read(), namespace)
+
+        controller = MagicMock()
+        monitor = namespace["SendspinMonitor"](controller, MagicMock())
+
+        monitor.onNotification("xbmc", "Player.OnStop", "{}")
+
+        self.assertIs(monitor.stop_event_triggered, True)
+
+    def test_kodi_player_stop_callback_marks_stop_request(self):
+        controller = MagicMock()
+        controller._should_forward_kodi_player_event.return_value = True
+        monitor = type("MonitorState", (), {"stop_event_triggered": False})()
+
+        player = session.SendspinKodiPlayer(controller, monitor)
+        player.onPlayBackStopped()
+
+        self.assertIs(monitor.stop_event_triggered, True)
+
+    def test_dummy_stop_requires_confirmed_disappearance_during_active_sendspin(self):
+        self.assertTrue(session.kodi_dummy_stop_confirmed(True, False, True, False, 1.0))
+        self.assertFalse(session.kodi_dummy_stop_confirmed(True, False, True, False, 0.5))
+        self.assertFalse(session.kodi_dummy_stop_confirmed(True, False, False, False, 2.0))
+        self.assertFalse(session.kodi_dummy_stop_confirmed(True, False, True, True, 2.0))
+        self.assertFalse(session.kodi_dummy_stop_confirmed(False, False, True, False, 2.0))
 
 
 class TestNativeBackendSupervisor(unittest.TestCase):
