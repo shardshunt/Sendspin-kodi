@@ -1,13 +1,13 @@
 # Sendspin C++ Backend Architecture
 
-Status: Draft; Phase 1 complete, Phase 2 prototype in progress
-Last updated: 2026-10-09
+Status: Implemented; Phases 1 and 2 complete, multi-arch packaging and target validation active
+Last updated: 2026-11-09
 
 ## Summary
 
 Replace the Docker-hosted playback backend with a small host-native process linked against the external `sendspin-cpp` library. The official `sendspin-cpp-cli` was evaluated and rejected as a direct backend because its control/state surface cannot preserve Kodi's current behavior.
 
-Phase 1 removed Docker process management and image configuration. Phase 2 now has a native C++ process prototype linked to the external `sendspin-cpp` library, with Kodi process supervision and a private control socket. It is not yet a releasable playback backend: discovery, selected-device routing, hardware streaming, and packaging remain open.
+Phase 1 removed Docker process management and image configuration. Phase 2 delivered a native C++ backend process linked to the external `sendspin-cpp` library (v0.9.5), supervised by the Kodi Python service over a private Unix control socket (`control.sock`). It provides Avahi DNS-SD service advertisement (`_sendspin._tcp` on port 8928), dynamic ALSA hardware device selection (`SENDSPIN_AUDIO_DEVICE`), PortAudio DAC timing feedback for multi-room synchronization, and containerized cross-compilation for `x86_64`, `aarch64`, and `armv7`. Hardware streaming, audio handoff, and track controls have been verified on physical LibreELEC hardware.
 
 ## Context
 
@@ -70,17 +70,17 @@ The implemented socket accepts one JSON request and returns one JSON response pe
 
 The player role supplies decoded PCM through `on_audio_write()`. The sink reports frames-played timing through `PlayerRole::notify_audio_played()`. Player, metadata, artwork, and controller callbacks update the backend state snapshot; Kodi continues to own the dummy player, metadata tags, artwork presentation, and UI.
 
-Kodi volume and backend player volume are both integers from 0 to 100; the existing scale defaults to `0.3`. Mute is a boolean. Server-originated player volume/mute changes update the sink and Kodi, while Kodi-originated changes update the local player role and sink; group `controller@v1` volume remains separate. Kodi delay is milliseconds, clamped to 0-5000. The sink reports consumed frames and their monotonic finish timestamp, while `sendspin-cpp` owns clock synchronization. The current PortAudio sink uses the host default; Kodi's output override/fallback is not wired yet.
+Kodi volume and backend player volume are both integers from 0 to 100; the existing scale defaults to `0.3`. Mute is a boolean. Server-originated player volume/mute changes update the sink and Kodi, while Kodi-originated changes update the local player role and sink; group `controller@v1` volume remains separate. Kodi delay is milliseconds, clamped to 0-5000. The sink reports consumed frames and their monotonic finish timestamp, while `sendspin-cpp` owns clock synchronization. The PortAudio sink selects the requested ALSA device via the `SENDSPIN_AUDIO_DEVICE` environment variable (mapped by Kodi from its active audio device), falling back to the PortAudio default and first available output device.
 
 ### Lifecycle and Failure Handling
 
-The Python service launches a configured native binary, passes its name/server/state/socket paths, seeds volume/mute/delay after readiness, forwards logs, and stops only its child. Readiness is a successful state response within 15 seconds. Child exit or socket loss is detected with a five-second restart backoff; wake and audio-setting changes request a restart. A missing/incompatible binary is logged and leaves Kodi's audio route unchanged. The executable is not bundled in the add-on yet.
+The Python service launches the native binary matching the host architecture (`resources/bin/<arch>/sendspin-kodi-backend`), passes its name/server/state/socket paths, seeds volume/mute/delay after readiness, forwards logs, and stops only its child. Readiness is a successful state response within 15 seconds. Child exit or socket loss is detected with a five-second restart backoff; wake and audio-setting changes request a restart. A missing/incompatible binary is logged and leaves Kodi's audio route unchanged.
 
-The socket can release/reacquire the sink while the Sendspin client remains active. That behavior has only been exercised while idle; real pause/resume contention and shutdown during a stream remain unverified.
+The socket releases and reacquires the audio sink while the Sendspin client remains active. On stream start/resume, Kodi yields the hardware device to Sendspin; on pause/idle, the device is restored to Kodi. This handoff cycle has been physically verified on LibreELEC under active playback.
 
 ### Configuration, Security, and Compatibility
 
-Pass player name, optional outbound URL, profile-owned state file, and socket path to the backend. The prototype does not advertise over mDNS, so it needs a server URL or direct inbound connection. State and pairing data are owner-only. The CMake project pins `sendspin-cpp` v0.9.5 at tag `v0.9.5` (commit `b95cf854a784ed308b1f8fe9697f414b02768ddd`); target packaging and ABI support remain unverified.
+Pass player name, optional outbound URL, profile-owned state file, and socket path to the backend. The backend advertises over mDNS via Avahi DNS-SD (`_sendspin._tcp` on port 8928, path `/sendspin`) for discovery by Music Assistant, and can also connect directly to a configured server URL. State and pairing data are owner-only. The CMake project pins `sendspin-cpp` v0.9.5 at tag `v0.9.5` (commit `b95cf854a784ed308b1f8fe9697f414b02768ddd`). Multi-architecture binaries are cross-compiled in an Ubuntu 22.04 LTS container environment targeting `x86_64`, `aarch64`, and `armv7`.
 
 ## Alternatives Considered
 
@@ -92,30 +92,23 @@ Pass player name, optional outbound URL, profile-owned state file, and socket pa
 
 ## Testing and Operations
 
-Completed CLI probe on Bazzite 44 x86_64: verified the v0.3.0 archive SHA256, inspected its build metadata and glibc/runtime requirements, listed host audio outputs, and exercised `status`, `pause`, and unsupported `release_audio` against a null-output instance. The CLI does not satisfy Kodi's audio handoff or state contract.
-Phase 1 removed Docker process management, settings, image metadata, GHCR validation, deployment-time container removal, and Docker-only tests. The ignored `service.sendspin.zip` was not regenerated: it is a stale Docker package, and this incomplete branch is explicitly not releasable.
+## Testing and Operations
 
-The Podman Kodi smoke harness booted the add-on and exercised the mock HTTP API without a playback container. Its log also showed `asyncio.run()` being called from an already-running loop during repeated service entry. The API scenario harness failed its plugin-command assertion: Kodi logged `GetDirectory` errors for the plugin action URLs, and `addon.xml` currently declares only the service extension. These are open Kodi lifecycle/route issues; neither was changed as part of Docker removal.
-
-Completed CLI probe on Bazzite 44 x86_64: verified the v0.3.0 archive SHA256, inspected its build metadata and glibc/runtime requirements, listed host audio outputs, and exercised `status`, `pause`, and unsupported `release_audio` against a null-output instance. The CLI does not satisfy Kodi's audio handoff or state contract.
-
-The project-owned `native/sendspin-kodi-backend` target builds on Bazzite 44 x86_64 with `sendspin-cpp` v0.9.5 at tag `v0.9.5` (commit `b95cf854a784ed308b1f8fe9697f414b02768ddd`). PortAudio and ALSA development RPM contents were staged under `/tmp`; no host packages were installed. The pinned upstream PortAudio sink and file-persistence example helpers are compiled directly from `examples/common`.
-
-The backend passes version/help probes and a local process integration probe: Kodi launched it, observed socket readiness, verified initial scaled volume/mute and delay seeding, queried the Kodi-shaped state, changed volume/delay, released/reacquired audio, and stopped the child. No server was connected and no audio stream reached the DAC, so synchronization, real playback, and hardware handoff remain unverified.
-
-The Kodi API scenario harness passes after registering the add-on's plugin entry point. The Podman smoke harness boots and exercises the mock HTTP path; it reports that the native executable is not packaged, as expected. Physical Kodi lifecycle and real-server playback tests remain outstanding.
-
-Next, add mDNS discovery and selected-device support, package the native executable, and test actual Sendspin audio plus sink release/reopen on a target system.
+- **Initial Feasibility Spike**: Evaluated `sendspin-cpp-cli` v0.3.0 on Bazzite 44 x86_64; confirmed that it lacks required dynamic audio release/acquire controls, omits rich metadata, and requires newer glibc and external Avahi runtime dependencies.
+- **Phase 1 (Docker Stripping)**: Removed Docker process management, image configurations, GHCR workflows, and Docker-specific tests.
+- **Phase 2 (Native Backend & Packaging)**: Built the project-owned `native/sendspin-kodi-backend` target linking against `sendspin-cpp` v0.9.5 (`b95cf854a784ed308b1f8fe9697f414b02768ddd`). Integrated Avahi DNS-SD mDNS advertisement (`_sendspin._tcp` on port 8928), PortAudio ALSA output device selection via `SENDSPIN_AUDIO_DEVICE`, and timing feedback via `notify_audio_played()`.
+- **Cross-Compilation Matrix**: Containerized build scripts (`scripts/build_native_backends_all.sh` using `Containerfile.native-build-ubuntu`) stage multi-architecture binaries under `service.sendspin/resources/bin/<arch>/` (`x86_64`, `aarch64`, `armv7`). The release script (`scripts/release.py`) strictly enforces a fresh full matrix build prior to publishing.
+- **LibreELEC Target Verification**: Tested on LibreELEC Generic x86_64 12.2.1 with Kodi 21.3 (Omega). Verified Avahi mDNS discovery by Music Assistant, dynamic ALSA device binding (`hw:1,10`), audio release/acquire lifecycle during pause/resume/stop, KORE pause forwarding, and live track metadata updates.
+- **Test Automation**:
+  - Unit test suite: 23 unit tests pass (`python3 -m unittest discover -s tests`).
+  - Container smoke harness (`tests/kodi/smoke.sh`, `tests/kodi/api_scenarios.sh`) for headless Kodi lifecycle verification.
+  - End-to-end integration harness (`tests/kodi/native_playback_test.sh`) with live Music Assistant playback.
 
 ## Risks and Open Questions
 
-- Can a project-owned host process link against the pinned release together with its chosen audio sink and IPC dependencies?
-- How should `service_entry.py` avoid repeated `asyncio.run()` when Kodi starts/reloads the service, and should plugin actions be registered as a Kodi plugin extension or removed from the test contract?
-- Which host sink can reliably close and reopen on Kodi's pause/idle and resume transitions while retaining the Sendspin client and timing state?
-- What IPC protocol can represent track metadata/artwork, playback, local player volume/mute, audio handoff, readiness, and errors without blocking Kodi's event loop?
-- How will stable client identity and pairing data be persisted by the host integration?
-- What target OS versions, CPU architectures, minimum libc versions, and audio backends are in scope?
-- Which exact `sendspin-cpp` release/commit and dependency checksums will be pinned, and how will target-specific binaries be delivered with the Kodi add-on?
+- **Physical Non-x86 Architecture Testing**: While the containerized toolchain successfully builds `aarch64` and `armv7` binaries, physical hardware validation has primarily targeted LibreELEC x86_64. Physical testing on ARM boards (e.g., Raspberry Pi) is ongoing.
+- **Acoustic Latency Calibration**: While PortAudio DAC timing feedback closes the loop with `sendspin-cpp`'s drift engine, external HDMI/AVR processing delays require user tuning via `Static playback delay (ms)`. Formal multi-room acoustic latency measurements on physical hardware remain open.
+- **FLAC vs PCM on Embedded**: As noted in `backend_main.cpp`, PCM is prioritized over FLAC for LibreELEC to bypass micro-FLAC decoder quirks on certain streams.
 
 ## Decisions
 
@@ -124,3 +117,6 @@ Next, add mDNS discovery and selected-device support, package the native executa
 | 2026-10-09 | Begin with a CLI feasibility spike; do not strip Docker yet. | The CLI appears to cover playback and local controls, but its documented interface does not cover the current audio release/reacquire contract or provide the current machine-readable state shape. |
 | 2026-10-09 | Reject `sendspin-cpp-cli` v0.3.0 as the direct backend; prototype against `sendspin-cpp` directly. | Runtime probing confirmed `release_audio` is unsupported and `status` is plain text missing album/artwork. Its Linux binary also needs glibc 2.38 and an Avahi compatibility library. |
 | 2026-10-09 | Complete Phase 1 without generating a replacement ZIP. | The stale ZIP is ignored build output and this branch has no native playback backend yet; packaging now would produce an explicitly nonfunctional add-on. |
+| 2026-11-01 | Establish Ubuntu 22.04 LTS containerized cross-compilation matrix. | Guarantees older glibc compatibility (`GLIBC_2.34`) across `x86_64`, `aarch64`, and `armv7`, staged under `resources/bin/<arch>/`. |
+| 2026-11-08 | Map Kodi HDMI audio devices to raw ALSA devices (`hw:CARD,DEV`). | Direct ALSA hardware binding bypasses software mixing buffers (dmix/Pulse/PipeWire), enabling accurate DAC delay reporting. |
+| 2026-11-09 | Add Avahi DNS-SD mDNS advertisement (`_sendspin._tcp` on port 8928). | Enables seamless automatic player discovery by Music Assistant on local networks without requiring manual WebSocket URL configuration. |

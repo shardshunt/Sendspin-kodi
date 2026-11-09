@@ -4,9 +4,9 @@ Branch: `consider-senspin-cpp-instead-of-docker`
 
 ## Scope
 
-- [ ] Replace the Docker-hosted playback backend with an integration that uses `sendspin-cpp`.
-- [ ] Build the new integration cleanly around `sendspin-cpp`; do not preserve Docker as a fallback.
-- [ ] Treat `sendspin-cpp` as an external dependency: do not modify or reimplement its library functionality.
+- [x] Replace the Docker-hosted playback backend with an integration that uses `sendspin-cpp`.
+- [x] Build the new integration cleanly around `sendspin-cpp`; do not preserve Docker as a fallback.
+- [x] Treat `sendspin-cpp` as an external dependency: do not modify or reimplement its library functionality.
 - [ ] Confirm supported distributions, CPU architectures, and minimum versions for LibreELEC, Debian, and Fedora. LibreELEC Generic x86_64 12.2.1 is the only physical target verified so far.
 - [x] Define expected behavior when the backend cannot be built or started.
 
@@ -20,7 +20,7 @@ Branch: `consider-senspin-cpp-instead-of-docker`
 - [x] Define how Kodi communicates with the backend and how state, errors, and logs reach the add-on.
 - [x] Define audio-device selection, release/reacquire, startup readiness, shutdown, and recovery behavior.
 - [x] Define timing/synchronization and two-way volume/mute behavior, including units and ownership.
-- [ ] Record intentional breaking changes; no migration or rollback for released Docker installations is required for this branch.
+- [x] Record intentional breaking changes; no migration or rollback for released Docker installations is required for this branch.
 
 ## Implementation
 
@@ -62,18 +62,19 @@ Branch: `consider-senspin-cpp-instead-of-docker`
 - [x] Verify Kodi-originated pause forwarding from KORE on LibreELEC Generic x86_64 12.2.1.
 - [ ] Measure playback synchronization/timing on target hardware.
 - [ ] Test clear failure behavior when the backend is missing, incompatible, or fails to start.
-- [ ] Run `ruff check --fix .` and `ruff format .` across the repository.
+- [x] Run `ruff check --fix .` and `ruff format .` across the repository.
 - [x] Pass Ruff and Ruff-format commit hooks for the changed Python files.
-- [ ] Run `pre-commit run --all-files`.
+- [x] Run `pre-commit run --all-files`.
 - [x] Verify GitHub release packaging requires a current full x86_64/aarch64/armv7 build record and cannot be bypassed with `--force`.
 - [x] Run focused playback unit tests: `python3 -m unittest discover -s tests -p test_audio_playback.py` (12 tests).
-- [x] Run `python3 -m unittest discover -s tests` (14 tests, passed 2026-11-01).
+- [x] Run `python3 -m unittest discover -s tests` (23 tests, passed 2026-11-09).
 - [ ] Update and run applicable Kodi smoke/API tests for the new implementation; do not require Docker for these tests.
 - [ ] Perform and record physical-device testing for LibreELEC and representative Debian/Fedora systems.
 - [x] Record tested OS versions, CPU architectures, dependency versions, results, and known limitations.
 
 ### Recorded Device Results
 
+- LibreELEC Generic x86_64 12.2.1, Kodi Python 3.11.13 (2026-11-09): backend started with Avahi mDNS DNS-SD advertisement (`_sendspin._tcp` on port 8928). Kodi switched to Bluetooth/dummy sink, backend acquired `hw:1,10` (HDMI 4 / Panasonic-TV), playback streamed smoothly across multiple tracks, and dynamic track metadata updates (`updateInfoTag`) were verified in the Kodi UI.
 - LibreELEC Generic x86_64 12.2.1, Kodi Python 3.11.13 (2026-11-01): backend started, connected to Music Assistant, selected `hw:1,10` (HDA ATI HDMI / Panasonic-TV), and playback plus Kodi audio release/reacquire were observed. Kodi volume/mute, track metadata updates, and KORE pause forwarding worked. First-play metadata refresh was also confirmed by the user.
 - Kodi pause forwarding uses the polled Kodi paused-state transition, preserves a pending pause for up to five seconds, and reports backend rejection. Unit and LibreELEC device testing passed.
 - The 2026-11-01 logs exposed two routing issues: restoring the captured PulseAudio Bluetooth device, then treating Kodi's HDMI `DEV=0` as ALSA PCM 0. Restore now follows the target when the hardware override is set, and HDMI labels take precedence in ALSA mapping. Unit tests pass; HDMI4 device verification is pending with override `hw:1,10`.
@@ -90,6 +91,6 @@ Branch: `consider-senspin-cpp-instead-of-docker`
 - [x] Docker-specific code and configuration have been removed from the add-on and its active test/deployment paths.
 - [ ] The new backend builds and runs on every agreed target.
 - [ ] Required playback, audio handoff, synchronization, volume, and Kodi UI behavior passes validation.
-- [ ] The integration uses the external `sendspin-cpp` dependency without modifying or duplicating its library implementation.
+- [x] The integration uses the external `sendspin-cpp` dependency without modifying or duplicating its library implementation.
 - [ ] Automated checks and platform-specific validation pass, with exceptions documented.
-- [ ] Documentation describes the new dependency, build/run requirements, and known limitations.
+- [x] Documentation describes the new dependency, build/run requirements, and known limitations.
