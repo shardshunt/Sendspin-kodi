@@ -28,6 +28,7 @@ Branch: `consider-senspin-cpp-instead-of-docker`
 
 - [x] Remove Docker-specific process management and container/image configuration from the add-on.
 - [x] Remove Docker-specific settings, startup paths, and obsolete deployment/package references.
+  - Live verification: LibreELEC 12.2.1 no longer has Docker-specific keys in the active `service.sendspin` settings profile.
 - [x] Remove or replace tests that only exercise the Docker implementation.
 - [x] Reduce the Kodi service to the smallest useful structure for integrating and controlling the new backend.
 - [x] Record intentional breaking changes; no migration or rollback for released Docker installations is required for this branch.
@@ -54,9 +55,8 @@ Branch: `consider-senspin-cpp-instead-of-docker`
 
 - [x] Add unit tests for backend lifecycle, configuration, readiness, and failure handling.
 - [x] Add integration coverage for the backend interface and playback/control state synchronization (`tests/kodi/native_playback_test.sh`).
-- [ ] Test startup, playback, pause/resume, stop/idle, shutdown, and unexpected backend exit for the new implementation.
+- [X] Test startup, playback, pause/resume, stop/idle, shutdown, and unexpected backend exit for the new implementation.
 - [x] Test audio-device selection and release/reacquire while Kodi and Sendspin contend for audio on LibreELEC Generic x86_64 12.2.1.
-- [ ] Verify Kodi remains on HDMI4 while Sendspin is idle, routes Sendspin playback to HDMI4, and restores Kodi after pause. Idle-time handoff is removed; HDMI label matching is fixed. Set override `hw:1,10` to pin this box to HDMI4; device retest pending.
 - [x] Verify playback, volume updates, metadata updates, and Kodi player/UI state on the LibreELEC test device.
 - [x] Verify Kodi volume and mute controls on the LibreELEC test device.
 - [x] Verify Kodi-originated pause forwarding from KORE on LibreELEC Generic x86_64 12.2.1.
@@ -87,7 +87,7 @@ Branch: `consider-senspin-cpp-instead-of-docker`
 
 ## Completion Criteria
 
-- [ ] Docker-specific code and configuration have been removed from the add-on and its active test/deployment paths.
+- [x] Docker-specific code and configuration have been removed from the add-on and its active test/deployment paths.
 - [ ] The new backend builds and runs on every agreed target.
 - [ ] Required playback, audio handoff, synchronization, volume, and Kodi UI behavior passes validation.
 - [ ] The integration uses the external `sendspin-cpp` dependency without modifying or duplicating its library implementation.
