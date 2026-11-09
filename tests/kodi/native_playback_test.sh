@@ -7,7 +7,8 @@ MA_API_URL="${MA_API_URL:-http://${MA_HOST}:8095/api}"
 SENDSPIN_SERVER_URL="${SENDSPIN_SERVER_URL:-ws://${MA_HOST}:8927/sendspin}"
 MA_QUERY="${MA_QUERY:-Middle Kids Beliefs and Prayers}"
 MA_PLAYER_ID="${MA_PLAYER_ID:-}"
-MA_PLAYER_NAME="${MA_PLAYER_NAME:-Kodi}"
+SENDSPIN_PLAYER_NAME="${SENDSPIN_PLAYER_NAME:-${MA_PLAYER_NAME:-Sendspin Kodi Test}}"
+MA_PLAYER_NAME="${MA_PLAYER_NAME:-$SENDSPIN_PLAYER_NAME}"
 MA_ALLOW_UNAVAILABLE="${MA_ALLOW_UNAVAILABLE:-false}"
 MA_API_TOKEN="${MA_API_TOKEN:-}"
 MA_API_TOKEN_FILE="${MA_API_TOKEN_FILE:-${HOME:-}/.config/sendspin-kodi/ma_api_token}"
@@ -133,6 +134,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 ALSA_DEVICE="$ALSA_DEVICE" SENDSPIN_SERVER_URL="$SENDSPIN_SERVER_URL" \
+SENDSPIN_PLAYER_NAME="$SENDSPIN_PLAYER_NAME" \
 PODMAN_ROOTFUL="$PODMAN_ROOTFUL" KODI_PRIVILEGED="${KODI_PRIVILEGED:-true}" "$HARNESS" &
 HARNESS_PID=$!
 
@@ -187,15 +189,28 @@ allow_unavailable = sys.argv[3].lower() == "true"
 result = payload.get("result", payload) if isinstance(payload, dict) else payload
 players = result.get("players", result.get("items", [])) if isinstance(result, dict) else result
 players = players if isinstance(players, list) else []
+selected = None
 for player in players:
     name = str(player.get("name", ""))
     provider = str(player.get("provider") or "")
     player_id = player.get("player_id") or player.get("id")
     available = player.get("available", False)
-    if player_id and wanted in name.lower() and (available or allow_unavailable):
-        print(player_id)
-        print(f"Using MA player: {name} [{player_id}] ({provider}, available={available})", file=sys.stderr)
+    if player_id and wanted == name.lower() and (available or allow_unavailable):
+        selected = (player_id, name, provider, available)
         break
+if selected is None:
+    for player in players:
+        name = str(player.get("name", ""))
+        provider = str(player.get("provider") or "")
+        player_id = player.get("player_id") or player.get("id")
+        available = player.get("available", False)
+        if player_id and wanted in name.lower() and (available or allow_unavailable):
+            selected = (player_id, name, provider, available)
+            break
+if selected:
+    player_id, name, provider, available = selected
+    print(player_id)
+    print(f"Using MA player: {name} [{player_id}] ({provider}, available={available})", file=sys.stderr)
 else:
     raise SystemExit(1)
 PY

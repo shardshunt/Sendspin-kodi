@@ -7,4 +7,5 @@
     <setting id="instance_guard_enabled">false</setting>
     <setting id="activate_visualisation_enabled">false</setting>
     <setting id="require_dummy_playback">false</setting>
+    <setting id="player_name">Sendspin Kodi Test</setting>
 </settings>

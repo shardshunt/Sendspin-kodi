@@ -109,8 +109,10 @@ test track, starts it through Music Assistant, and follows the Kodi log:
 tests/kodi/native_playback_test.sh
 ```
 
-Override the track or player when needed:
+By default, the test uses the player name `Sendspin Kodi Test` so it does not
+collide with live Kodi instances running on the network. You can override the
+track or player name when needed:
 
 ```bash
-MA_QUERY='The Beatles' MA_PLAYER_NAME='Kodi' tests/kodi/native_playback_test.sh
+MA_QUERY='The Beatles' MA_PLAYER_NAME='Sendspin Kodi Test' tests/kodi/native_playback_test.sh
 ```

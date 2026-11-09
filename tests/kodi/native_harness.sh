@@ -26,6 +26,7 @@ MA_DATA_DIR="${MA_DATA_DIR:-$RUNTIME_DIR/music-assistant-data}"
 SENDSPIN_SERVER_URL="${SENDSPIN_SERVER_URL:-}"
 START_MUSIC_ASSISTANT="${START_MUSIC_ASSISTANT:-false}"
 ALSA_DEVICE="${ALSA_DEVICE:-}"
+SENDSPIN_PLAYER_NAME="${SENDSPIN_PLAYER_NAME:-${MA_PLAYER_NAME:-Sendspin Kodi Test}}"
 KODI_PRIVILEGED="${KODI_PRIVILEGED:-false}"
 PODMAN_ROOTFUL="${PODMAN_ROOTFUL:-false}"
 ORIGINAL_DEFAULT_SINK=""
@@ -139,13 +140,19 @@ with open(path, "w", encoding="utf-8") as output:
     )
 PY
 
-python3 - "$RUNTIME_USERDATA_DIR/addon_data/service.sendspin/settings.xml" "$SENDSPIN_SERVER_URL" "$ALSA_DEVICE" <<'PY'
+python3 - "$RUNTIME_USERDATA_DIR/addon_data/service.sendspin/settings.xml" "$SENDSPIN_SERVER_URL" "$ALSA_DEVICE" "$SENDSPIN_PLAYER_NAME" <<'PY'
 import sys
 import xml.etree.ElementTree as ET
-path, server_url, alsa_device = sys.argv[1:]
+path, server_url, alsa_device, player_name = sys.argv[1:]
 tree = ET.parse(path)
 root = tree.getroot()
-for setting_id, value in {"server_url": server_url, "backend_path": "", "control_url": "http://127.0.0.1:59999", "audio_device_override": alsa_device}.items():
+for setting_id, value in {
+    "server_url": server_url,
+    "backend_path": "",
+    "control_url": "http://127.0.0.1:59999",
+    "audio_device_override": alsa_device,
+    "player_name": player_name,
+}.items():
     setting = root.find(f"setting[@id='{setting_id}']")
     if setting is None:
         setting = ET.SubElement(root, "setting", {"id": setting_id})
