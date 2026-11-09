@@ -13,9 +13,11 @@ deb [arch=arm64,armhf] http://ports.ubuntu.com/ubuntu-ports/ jammy-security main
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates cmake g++ git make patch pkg-config binutils \
-        libasound2-dev \
+        libasound2-dev libavahi-client-dev \
         gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libasound2-dev:arm64 \
+        libavahi-client-dev:arm64 \
         gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libasound2-dev:armhf \
+        libavahi-client-dev:armhf \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace

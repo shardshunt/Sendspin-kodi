@@ -57,7 +57,7 @@ The script streams the add-on files while preserving remote Python libraries in 
 
 When the service starts, it automatically detects the host architecture (`platform.machine()`) and launches the corresponding backend binary from `resources/bin/<arch>/sendspin-kodi-backend` (falling back to legacy unnested path if needed).
 
-The backend connects to the Sendspin server (e.g., Music Assistant) and advertises Kodi as a synchronized player. Communication between the Kodi Python service and the native backend occurs over a high-performance UNIX domain socket (`control.sock`).
+The backend advertises Kodi as a Sendspin player over mDNS using the `_sendspin._tcp` service, port `8928`, and the `/sendspin` path. Music Assistant can discover Kodi on the local network. If `Sendspin server WebSocket URL` is configured, the backend also connects directly to that URL; otherwise it waits for an inbound server connection. On Linux, the backend links to Avahi's client library for DNS-SD advertisement. Communication between the Kodi Python service and the native backend occurs over a UNIX domain socket (`control.sock`).
 
 ## Configuration
 

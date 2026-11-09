@@ -1,5 +1,6 @@
 #include "control_socket.h"
 #include "file_persistence_provider.h"
+#include "mdns_advertiser.h"
 #include "portaudio_sink.h"
 
 #include <ArduinoJson.h>
@@ -457,6 +458,10 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "sendspin-cpp failed to start\n");
         return 1;
     }
+    MdnsAdvertiser mdns_advertiser;
+    if (!mdns_advertiser.start(options.name, sendspin::SendspinClientConfig::DEFAULT_SERVER_PORT, "/sendspin")) {
+        std::fprintf(stderr, "Warning: Sendspin mDNS advertisement could not start\n");
+    }
     player.update_volume(options.initial_volume);
     player.update_muted(options.initial_muted);
     audio_sink.set_volume(options.initial_volume);
@@ -505,6 +510,7 @@ int main(int argc, char** argv) {
     }
 
     control_socket.close();
+    mdns_advertiser.stop();
     client.stop();
     audio_sink.stop();
     return 0;

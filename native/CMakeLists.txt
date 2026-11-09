@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 project(sendspin_kodi_backend LANGUAGES C CXX)
 
 include(FetchContent)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(AVAHI_CLIENT REQUIRED IMPORTED_TARGET avahi-client)
 
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SENDSPIN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -281,10 +283,11 @@ set(SENDSPIN_CPP_EXAMPLES_DIR "${sendspin_cpp_SOURCE_DIR}/examples/common")
 add_executable(sendspin-kodi-backend
     backend_main.cpp
     control_socket.cpp
+    mdns_advertiser.cpp
     "${SENDSPIN_CPP_EXAMPLES_DIR}/file_persistence_provider.cpp"
     "${SENDSPIN_CPP_EXAMPLES_DIR}/portaudio_sink.cpp"
 )
 target_compile_features(sendspin-kodi-backend PRIVATE cxx_std_20)
 target_include_directories(sendspin-kodi-backend PRIVATE "${SENDSPIN_CPP_EXAMPLES_DIR}")
-target_link_libraries(sendspin-kodi-backend PRIVATE sendspin portaudio_static)
+target_link_libraries(sendspin-kodi-backend PRIVATE sendspin portaudio_static PkgConfig::AVAHI_CLIENT)
 target_compile_definitions(sendspin-kodi-backend PRIVATE SENDSPIN_KODI_VERSION="0.1.0")
