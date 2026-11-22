@@ -412,6 +412,8 @@ def create_zip() -> Path:
                 continue
             if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
                 continue
+            if ".sync-conflict-" in path.name or path.name.startswith("."):
+                continue
             archive.write(path, path.relative_to(ROOT).as_posix())
 
     return ZIP_PATH
@@ -517,6 +519,11 @@ def main() -> int:
     )
     parser.add_argument("--publish", action="store_true", help="create the GitHub release and upload the release zip")
     parser.add_argument(
+        "--package",
+        action="store_true",
+        help="build and validate the release zip without publishing",
+    )
+    parser.add_argument(
         "--record-native-backend-matrix",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -535,11 +542,26 @@ def main() -> int:
         print_status("Native Backend Matrix", True, "Recorded complete architecture build")
         return 0
 
-    if args.check == args.publish:
-        parser.error("choose exactly one of --check or --publish")
+    actions = [args.check, args.publish, args.package]
+    if actions.count(True) != 1:
+        parser.error("choose exactly one of --check, --publish, or --package")
 
     try:
-        if args.publish:
+        if args.package:
+            addon_id, version, local_errors = validate_versions()
+            if local_errors:
+                for e in local_errors:
+                    print_status("  > Error", False, e)
+                return 1
+            zip_path = create_zip()
+            print_status("Zip Creation", True, str(zip_path.relative_to(ROOT)))
+            zip_errors = verify_zip_layout(zip_path, addon_id, version)
+            if zip_errors:
+                print_status("Zip Layout Check", False, ", ".join(zip_errors))
+                return 1
+            print_status("Zip Layout Check", True, "Valid")
+            print(f"Created {zip_path.name} ({zip_path.stat().st_size:,} bytes)")
+        elif args.publish:
             publish(args.tag, args.token, args.force)
         else:
             success, _, _, _, _, _ = run_checks(args.tag, args.token)
