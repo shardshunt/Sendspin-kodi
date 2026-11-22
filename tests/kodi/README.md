@@ -61,6 +61,22 @@ docker compose -f tests/kodi/docker-compose.yml down
 The mock API exercises Kodi-side routes and player synchronization only. Use
 `native_harness.sh` for the real backend and audio-handoff path.
 
+## Simulated Distribution Smoke Checks
+
+Run the combined Kodi, Ubuntu, and Fedora smoke checks with:
+
+```bash
+tests/kodi/distro_smoke.sh
+```
+
+The command builds x86_64 and i386 backends, runs the headless Kodi add-on
+smoke test, then checks backend libraries and startup in Ubuntu 24.04 and
+Fedora containers. Each distribution check also plays a short silent stream
+through ALSA's software `null` PCM and queries the backend control socket.
+Use `--skip-build` to reuse existing binaries. These checks do not emulate a
+kernel sound device or verify end-to-end Sendspin playback; use
+`native_harness.sh` and a physical target for those checks.
+
 Build the ABI-matched backend with:
 
 ```bash
