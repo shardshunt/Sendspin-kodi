@@ -27,7 +27,7 @@ repos:
     hooks:
     -   id: sendspin-full-suite
         name: full deterministic test suite
-        entry: scripts/full_test_suite.sh --skip-style
+        entry: scripts/full_test_suite.sh --skip-style --commit-hook
         language: system
         pass_filenames: false
         always_run: true

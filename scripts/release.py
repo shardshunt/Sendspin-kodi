@@ -111,8 +111,8 @@ def validate_versions() -> tuple[str, str, list[str]]:
     return addon_id, addon_version, errors
 
 
-def tag_for(version: str, tag_override: str | None = None) -> str:
-    return tag_override or f"v{version}"
+def tag_for(version: str) -> str:
+    return f"v{version}"
 
 
 def native_source_fingerprint(source_root: Path = ROOT) -> str:
@@ -247,9 +247,7 @@ def release_exists(owner: str, repo: str, tag: str, token: str) -> bool:
     raise ReleaseError(f"Could not check release {tag}: HTTP {status} {body.decode('utf-8', errors='replace')}")
 
 
-def run_checks(
-    tag_override: str | None = None, token_override: str | None = None
-) -> tuple[bool, Path | None, str, str, str | None, str | None]:
+def run_checks(token_override: str | None = None) -> tuple[bool, Path | None, str, str, str | None, str | None]:
     """Runs all validation checks without early exit. Returns (overall_success, zip_path, version, tag, owner, repo)."""
     all_passed = True
     owner, repo = None, None
@@ -317,7 +315,7 @@ def run_checks(
 
     # 2. Remote Checks (GitHub release tag and version sequence)
     token = token_override or os.environ.get("GITHUB_TOKEN")
-    tag = tag_for(version, tag_override)
+    tag = tag_for(version)
 
     if not token:
         print_status("GitHub Release Check", True, f"Skipped (no token, tag {tag})")
@@ -450,14 +448,32 @@ def verify_zip_layout(zip_path: Path, addon_id: str, version: str) -> list[str]:
     return errors
 
 
-def create_release(owner: str, repo: str, tag: str, version: str, token: str) -> dict:
+def create_release(
+    owner: str,
+    repo: str,
+    tag: str,
+    version: str,
+    token: str,
+    release_type: str = "latest",
+    notes_override: str | None = None,
+) -> dict:
+    if release_type not in {"latest", "pre-release"}:
+        raise ReleaseError(f"Invalid release type {release_type!r}")
+
+    prerelease = release_type == "pre-release"
+    target_commitish = os.environ.get("GITHUB_SHA") or run_git(["rev-parse", "HEAD"])
+    release_notes = notes_override.strip() if notes_override and notes_override.strip() else None
+    if release_notes is None:
+        release_notes = generate_release_notes(owner, repo, tag, target_commitish, token)
+
     payload = {
         "tag_name": tag,
-        "target_commitish": os.environ.get("GITHUB_SHA") or run_git(["rev-parse", "HEAD"]),
+        "target_commitish": target_commitish,
         "name": f"Sendspin Kodi {version}",
-        "body": f"Release {version} for service.sendspin.",
-        "draft": False,
-        "prerelease": False,
+        "body": release_notes,
+        "draft": True,
+        "prerelease": prerelease,
+        "make_latest": "false" if prerelease else "true",
     }
     body = json.dumps(payload).encode("utf-8")
     status, response_body, _headers = github_request("POST", f"/repos/{owner}/{repo}/releases", token, body=body)
@@ -466,6 +482,31 @@ def create_release(owner: str, repo: str, tag: str, version: str, token: str) ->
             f"Could not create release {tag}: HTTP {status} {response_body.decode('utf-8', errors='replace')}"
         )
     return json.loads(response_body.decode("utf-8"))
+
+
+def generate_release_notes(owner: str, repo: str, tag: str, target_commitish: str, token: str) -> str:
+    request_body = json.dumps({"tag_name": tag, "target_commitish": target_commitish}).encode("utf-8")
+    status, response_body, _headers = github_request(
+        "POST",
+        f"/repos/{owner}/{repo}/releases/generate-notes",
+        token,
+        body=request_body,
+    )
+    if status != 200:
+        raise ReleaseError(
+            f"Could not generate release notes for {tag}: HTTP {status} "
+            f"{response_body.decode('utf-8', errors='replace')}"
+        )
+
+    try:
+        generated = json.loads(response_body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ReleaseError(f"GitHub returned invalid generated release notes for {tag}") from exc
+
+    notes = generated.get("body") if isinstance(generated, dict) else None
+    if not isinstance(notes, str) or not notes.strip():
+        raise ReleaseError(f"GitHub returned empty generated release notes for {tag}")
+    return notes
 
 
 def upload_asset(release: dict, asset_path: Path, token: str) -> None:
@@ -488,49 +529,72 @@ def upload_asset(release: dict, asset_path: Path, token: str) -> None:
         )
 
 
-def publish(tag_override: str | None = None, token_override: str | None = None, force: bool = False) -> None:
+def create_draft(
+    token_override: str | None = None,
+    release_type: str = "latest",
+    force: bool = False,
+    notes_override: str | None = None,
+) -> None:
     token = token_override or os.environ.get("GITHUB_TOKEN")
     if not token:
-        run_checks(tag_override, token_override)
-        print_status("Status", False, "GITHUB_TOKEN is required to publish")
+        run_checks(token_override)
+        print_status("Status", False, "GITHUB_TOKEN is required to create a draft release")
         sys.exit(1)
 
-    success, zip_path, version, tag, owner, repo = run_checks(tag_override, token_override)
+    success, zip_path, version, tag, owner, repo = run_checks(token_override)
     if not success and not force:
         sys.exit(1)
 
     if not success:
-        print_status("Force Mode", True, "Proceeding with publish despite validation failures")
+        print_status("Force Mode", True, "Proceeding with draft creation despite validation failures")
 
     if not (zip_path and owner and repo):
-        raise ReleaseError("Cannot force publish: missing critical repository or zip information")
+        raise ReleaseError("Cannot force draft creation: missing critical repository or zip information")
 
-    release = create_release(owner, repo, tag, version, token)
+    release = create_release(owner, repo, tag, version, token, release_type, notes_override)
     upload_asset(release, zip_path, token)
-    print_status("Status", True, f"Published as {tag}")
+    draft_url = str(release.get("html_url", ""))
+    detail = f"Draft ready as {tag} ({release_type})"
+    if draft_url:
+        detail = f"{detail}: {draft_url}"
+    print_status("Status", True, detail)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate, package, and publish service.sendspin releases.")
+    parser = argparse.ArgumentParser(description="Validate, package, and prepare service.sendspin release drafts.")
     parser.add_argument(
         "--check",
         action="store_true",
         help="validate versions, check the GitHub release tag is unused, and build the release zip",
     )
-    parser.add_argument("--publish", action="store_true", help="create the GitHub release and upload the release zip")
+    parser.add_argument(
+        "--draft",
+        action="store_true",
+        help="create a draft GitHub release and upload the release zip",
+    )
     parser.add_argument(
         "--package",
         action="store_true",
-        help="build and validate the release zip without publishing",
+        help="build and validate the release zip without creating a GitHub release",
     )
     parser.add_argument(
         "--record-native-backend-matrix",
         action="store_true",
         help=argparse.SUPPRESS,
     )
-    parser.add_argument("--tag", help="override the release tag; defaults to v<version>")
+    parser.add_argument(
+        "--release-type",
+        choices=("latest", "pre-release"),
+        default="latest",
+        help="GitHub release type (default: latest)",
+    )
+    parser.add_argument(
+        "--notes",
+        default=os.environ.get("RELEASE_NOTES"),
+        help="custom release body; defaults to GitHub-generated notes",
+    )
     parser.add_argument("--token", help="GitHub API token (overrides GITHUB_TOKEN env var)")
-    parser.add_argument("--force", action="store_true", help="force publish even if validation checks fail")
+    parser.add_argument("--force", action="store_true", help="create a draft despite non-critical check failures")
     args = parser.parse_args()
 
     if args.record_native_backend_matrix:
@@ -542,9 +606,9 @@ def main() -> int:
         print_status("Native Backend Matrix", True, "Recorded complete architecture build")
         return 0
 
-    actions = [args.check, args.publish, args.package]
+    actions = [args.check, args.draft, args.package]
     if actions.count(True) != 1:
-        parser.error("choose exactly one of --check, --publish, or --package")
+        parser.error("choose exactly one of --check, --draft, or --package")
 
     try:
         if args.package:
@@ -561,10 +625,10 @@ def main() -> int:
                 return 1
             print_status("Zip Layout Check", True, "Valid")
             print(f"Created {zip_path.name} ({zip_path.stat().st_size:,} bytes)")
-        elif args.publish:
-            publish(args.tag, args.token, args.force)
+        elif args.draft:
+            create_draft(args.token, args.release_type, args.force, args.notes)
         else:
-            success, _, _, _, _, _ = run_checks(args.tag, args.token)
+            success, _, _, _, _, _ = run_checks(args.token)
             if not success and not args.force:
                 return 1
     except ReleaseError as exc:
