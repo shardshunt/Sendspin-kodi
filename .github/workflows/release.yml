@@ -3,8 +3,16 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Release tag override. Defaults to v<addon version>."
+      release_type:
+        description: "Choose whether this is a stable latest release or a pre-release."
+        required: true
+        type: choice
+        options:
+          - latest
+          - pre-release
+        default: latest
+      release_notes:
+        description: "Optional custom release message. Leave blank to generate notes from changes since the previous release."
         required: false
         type: string
 
@@ -26,13 +34,9 @@ jobs:
       - name: Build and verify all native architectures
         run: scripts/build_native_backends_all.sh
 
-      - name: Publish release
+      - name: Create draft release for review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag }}
-        run: |
-          if [ -n "$RELEASE_TAG" ]; then
-            python scripts/release.py --publish --tag "$RELEASE_TAG"
-          else
-            python scripts/release.py --publish
-          fi
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: python scripts/release.py --draft --release-type "$RELEASE_TYPE" --notes "$RELEASE_NOTES"

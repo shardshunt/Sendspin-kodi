@@ -172,11 +172,22 @@ Package and validate the add-on using `release.py`:
 # Validate git cleanliness, versioning, and a fresh full-architecture build:
 python scripts/release.py --check --token GITHUB_TOKEN
 
-# Publish a GitHub release:
-python scripts/release.py --publish --token GITHUB_TOKEN
+# Create a draft release for review (the tag comes from the add-on version):
+python scripts/release.py --draft --token GITHUB_TOKEN
 
-# Force-publish despite non-critical checks; native matrix validation is never bypassed:
-python scripts/release.py --publish --force --token GITHUB_TOKEN
+# Create a pre-release draft:
+python scripts/release.py --draft --release-type pre-release --token GITHUB_TOKEN
+
+# Supply a custom release message (otherwise GitHub generates release notes):
+python scripts/release.py --draft --notes "Highlights and upgrade notes" --token GITHUB_TOKEN
+
+# Force-create a draft despite non-critical checks; native matrix validation is never bypassed:
+python scripts/release.py --draft --force --token GITHUB_TOKEN
 ```
+
+The release workflow offers the same `latest` / `pre-release` choice and creates
+a draft with the ZIP attached. Review the generated or custom notes in GitHub,
+then publish the draft when ready. The tag always comes from the add-on version
+(`v<version>`).
 
 Plugin versions must follow the `YYYY.Month.Patch` calendar format (e.g., `2026.5.0`).
