@@ -10,11 +10,11 @@ For single-architecture development or device testing, build and stage one
 backend from the repository root with:
 
 ```bash
-NATIVE_ARCH=x86_64 scripts/build_native_backend_ubuntu_container.sh
+scripts/build_native_backends_all.sh --arch x86_64
 ```
 
-Run the build on each target architecture, changing `NATIVE_ARCH` to
-`aarch64` or `armv7`. `NATIVE_ARCH` controls the staging directory; a
+Run the build on each target architecture, changing `--arch` to
+`aarch64` or `armv7`. `--arch` controls the staging directory; a
 cross-compiler/toolchain is still required when building for a different
 architecture.
 
@@ -27,7 +27,7 @@ scripts/build_native_backends_all.sh
 Build only selected targets with:
 
 ```bash
-NATIVE_ARCHES=x86_64 scripts/build_native_backends_all.sh
+scripts/build_native_backends_all.sh --arch x86_64
 ```
 
 Selected-architecture builds are for development and target-device testing

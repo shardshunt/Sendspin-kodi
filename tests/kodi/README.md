@@ -64,7 +64,7 @@ The mock API exercises Kodi-side routes and player synchronization only. Use
 Build the ABI-matched backend with:
 
 ```bash
-scripts/build_native_backend_ubuntu_container.sh
+scripts/build_native_backends_all.sh --arch x86_64
 ```
 
 Then run:

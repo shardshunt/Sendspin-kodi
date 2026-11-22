@@ -15,14 +15,19 @@ The native backend (`sendspin-kodi-backend`) is compiled with CMake, C++20, and 
 The recommended build uses a containerized Ubuntu 22.04 LTS cross-compilation environment (Podman):
 
 ```bash
-# Build the complete multi-arch matrix (x86_64, aarch64, armv7):
+# Build the complete multi-arch matrix simultaneously in parallel (x86_64, aarch64, armv7):
 scripts/build_native_backends_all.sh
 
-# Development-only build for one architecture (does not qualify for release):
-NATIVE_ARCHES=x86_64 scripts/build_native_backends_all.sh
+# Build a single architecture:
+scripts/build_native_backends_all.sh --arch x86_64
+# (or NATIVE_ARCHES=x86_64 scripts/build_native_backends_all.sh)
 
-# Or build a single cross-compiled target directly:
-NATIVE_ARCH=aarch64 scripts/build_native_backend_ubuntu_container.sh
+# Sequential builds or custom job allocation:
+scripts/build_native_backends_all.sh --serial
+scripts/build_native_backends_all.sh -j 4
+
+# Direct host build without container (requires host toolchain):
+scripts/build_native_backends_all.sh --host --arch x86_64
 ```
 
 Always run the complete matrix before GitHub publishing. The full build records
@@ -35,7 +40,7 @@ Compiled executables are staged per architecture under:
 - `service.sendspin/resources/bin/aarch64/sendspin-kodi-backend`
 - `service.sendspin/resources/bin/armv7/sendspin-kodi-backend`
 
-The direct `scripts/build_native_backend.sh` command can also be run on the host
+The direct `--host` command can also be run on the host
 or inside a development container for development only; it does not satisfy the
 GitHub release matrix gate.
 

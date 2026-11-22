@@ -58,7 +58,8 @@ scripts/build_native_backends_all.sh
 For development-only builds or target-specific testing, select an architecture:
 
 ```bash
-NATIVE_ARCHES=x86_64 scripts/build_native_backends_all.sh
+scripts/build_native_backends_all.sh --arch x86_64
+# (or NATIVE_ARCHES=x86_64 scripts/build_native_backends_all.sh)
 ```
 
 Selected builds do not create the full-matrix release record. `scripts/release.py`

@@ -26,8 +26,6 @@ NATIVE_ARCHITECTURES = ("x86_64", "aarch64", "armv7")
 NATIVE_MATRIX_MANIFEST = ROOT / "build" / "native-backend-matrix.json"
 NATIVE_BUILD_INPUTS = (
     Path("Containerfile.native-build-ubuntu"),
-    Path("scripts/build_native_backend.sh"),
-    Path("scripts/build_native_backend_ubuntu_container.sh"),
     Path("scripts/build_native_backends_all.sh"),
 )
 PYPROJECT = ROOT / "pyproject.toml"
