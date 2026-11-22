@@ -97,6 +97,10 @@ prepare_runtime_tree() {
   cp -a "$ROOT_DIR/service.sendspin/." "$RUNTIME_ADDON_DIR/"
   cp -a "$ROOT_DIR/tests/kodi/userdata-podman/." "$RUNTIME_USERDATA_PODMAN_DIR/"
 
+  # This harness exercises the mock HTTP control API. A bundled native backend
+  # switches the add-on to its Unix control socket, which the mock does not serve.
+  rm -rf "$RUNTIME_ADDON_DIR/resources/bin"
+
   find "$RUNTIME_ADDON_DIR" -type d -name "__pycache__" -prune -exec rm -rf {} +
   find "$RUNTIME_ADDON_DIR" -name "*.pyc" -delete
   find "$RUNTIME_ADDON_DIR" -name "*.sync-conflict-*" -delete

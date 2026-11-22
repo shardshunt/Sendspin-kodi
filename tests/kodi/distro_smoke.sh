@@ -4,10 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONTAINER_ENGINE="${CONTAINER_ENGINE:-podman}"
 BUILD_BACKENDS=true
+RUN_KODI_SMOKE=true
 
 show_help() {
   cat <<'EOF'
-Usage: tests/kodi/distro_smoke.sh [--skip-build]
+Usage: tests/kodi/distro_smoke.sh [--skip-build] [--skip-kodi]
 
 Build the x86_64 and i386 native backends, run the Kodi add-on smoke test,
 then check backend startup and virtual ALSA playback in Ubuntu and Fedora
@@ -15,6 +16,7 @@ containers.
 
 Options:
   --skip-build  Reuse existing x86_64 and i386 backend binaries.
+  --skip-kodi   Skip the basic Kodi smoke; useful after api_scenarios.sh.
   -h, --help    Show this help.
 
 Environment:
@@ -26,6 +28,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-build)
       BUILD_BACKENDS=false
+      shift
+      ;;
+    --skip-kodi)
+      RUN_KODI_SMOKE=false
       shift
       ;;
     -h|--help)
@@ -60,13 +66,15 @@ for arch in x86_64 i386; do
   }
 done
 
-echo "=== Headless Kodi add-on smoke ==="
-if [[ "$CONTAINER_ENGINE" == podman ]]; then
-  SENDSPIN_KODI_RUNTIME=podman CONTAINER_ENGINE="$CONTAINER_ENGINE" \
-    "$ROOT_DIR/tests/kodi/smoke.sh"
-else
-  SENDSPIN_KODI_RUNTIME=compose CONTAINER_ENGINE="$CONTAINER_ENGINE" \
-    "$ROOT_DIR/tests/kodi/smoke.sh"
+if [[ "$RUN_KODI_SMOKE" == true ]]; then
+  echo "=== Headless Kodi add-on smoke ==="
+  if [[ "$CONTAINER_ENGINE" == podman ]]; then
+    SENDSPIN_KODI_RUNTIME=podman CONTAINER_ENGINE="$CONTAINER_ENGINE" \
+      "$ROOT_DIR/tests/kodi/smoke.sh"
+  else
+    SENDSPIN_KODI_RUNTIME=compose CONTAINER_ENGINE="$CONTAINER_ENGINE" \
+      "$ROOT_DIR/tests/kodi/smoke.sh"
+  fi
 fi
 
 for image in ubuntu:24.04 fedora:latest; do

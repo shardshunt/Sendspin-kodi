@@ -122,26 +122,35 @@ See `SENDSPIN_CONTROL_API.md` for the full HTTP contract and curl examples.
 
 ### Tests
 
-The test suite covers unit testing, container smoke tests, and native hardware playback:
+Install the local Git commit hook once:
 
-- **Unit Tests**:
-  ```bash
-  python3 -m unittest discover tests
-  ```
-  Covers audio release/acquire lifecycle state transitions, volume scaling, socket client fallbacks, and architecture binary resolution.
+```bash
+uv run pre-commit install
+```
 
-- **Kodi Container Smoke Harness**:
-  ```bash
-  ./tests/kodi/smoke.sh
-  ./tests/kodi/api_scenarios.sh
-  ```
-  Runs headless Kodi in a container to verify add-on loading and API scenario coverage.
+The hook runs the full deterministic test suite before each commit. Run the
+same suite manually at any time with:
 
-- **Native Playback Test**:
-  ```bash
-  ./tests/kodi/native_playback_test.sh
-  ```
-  Full end-to-end integration test with live Music Assistant server and ALSA hardware output verification.
+```bash
+scripts/full_test_suite.sh
+```
+
+It runs the Python unit tests, repository-wide pre-commit checks, Kodi API
+scenarios, and x86_64/i386 backend checks in Ubuntu and Fedora containers.
+It requires Python 3.11, `uv`, Podman, and network access for container images
+and distro packages. Use `scripts/full_test_suite.sh --help` for details.
+
+Hardware-dependent live playback is not part of the automatic commit hook. Run
+the native Kodi harness on a device with ALSA hardware and a Sendspin server:
+
+```bash
+SENDSPIN_SERVER_URL=ws://<server>:8927/sendspin tests/kodi/native_harness.sh
+```
+
+The Music Assistant playback test is also available with
+`tests/kodi/native_playback_test.sh` when its server token and target hardware
+are configured. Run these physical playback checks before release or after
+changes to audio handoff and streaming.
 
 ### Release and packaging
 
