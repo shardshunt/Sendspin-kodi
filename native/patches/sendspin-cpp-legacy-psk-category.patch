@@ -1,0 +1,39 @@
+diff --git a/src/noise_handshake.cpp b/src/noise_handshake.cpp
+--- a/src/noise_handshake.cpp
++++ b/src/noise_handshake.cpp
+@@ -176,20 +176,30 @@ std::optional<Msg1CoreResult> run_msg1_core(
+     if (psk_id.empty()) {
+         SS_LOGE(TAG, "%s: psk_id missing from msg1 payload", log_prefix);
+         return std::nullopt;
+     }
+
+-    // messaging.md "noise/handshake": the payload declares which category the server is using the
+-    // referenced PSK as. A missing or unknown code is a malformed payload, which connection.md
+-    // "Failure Handling" makes a silent failure.
++    // SENDSPIN_KODI_LEGACY_CATEGORY_COMPAT: aiosendspin 9.1.1 omits
++    // psk_category. Resolve the id against all locally known categories.
++    std::optional<ResolvedPsk> resolved;
+     auto psk_category = psk_category_from_string(psk_category_code);
+-    if (!psk_category.has_value()) {
++    if (psk_category.has_value()) {
++        resolved = record_store.resolve_by_psk_id(psk_id, psk_category.value());
++    } else if (psk_category_code.empty()) {
++        SS_LOGW(TAG, "%s: msg1 has no psk_category; trying legacy server compatibility", log_prefix);
++        for (const auto category : {PskCategory::LONG_TERM, PskCategory::PAIRING,
++                                    PskCategory::SENTINEL}) {
++            resolved = record_store.resolve_by_psk_id(psk_id, category);
++            if (resolved.has_value()) {
++                break;
++            }
++        }
++    } else {
+         SS_LOGE(TAG, "%s: msg1 payload psk_category missing or unknown ('%s')", log_prefix,
+                 psk_category_code.c_str());
+         return std::nullopt;
+     }
+
+     SS_LOGD(TAG, "%s: psk_id='%s' psk_category='%s'", log_prefix, psk_id.c_str(),
+             psk_category_code.c_str());
+
+-    auto resolved = record_store.resolve_by_psk_id(psk_id, psk_category.value());
+     if (resolved.has_value()) {

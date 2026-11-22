@@ -20,15 +20,47 @@ def is_setting_enabled(name: str, default: bool = True) -> bool:
 
 
 class SendspinKodiPlayer(xbmc.Player):
-    def __init__(self, controller: SendspinServiceController):
+    def __init__(self, controller: SendspinServiceController, monitor):
         super().__init__()
         self.controller = controller
+        self.monitor = monitor
 
-    def onPlayBackPaused(self):  # noqa: N802 - Kodi callback name
-        self.controller.handle_kodi_pause()
+    def onPlayBackStopped(self):  # noqa: N802 - Kodi callback name
+        if self.controller._should_forward_kodi_player_event():
+            self.monitor.stop_event_triggered = True
 
-    def onPlayBackResumed(self):  # noqa: N802 - Kodi callback name
-        self.controller.handle_kodi_resume()
+
+def forward_kodi_pause_state_change(
+    controller: SendspinServiceController,
+    is_kodi_playing: bool,
+    is_kodi_paused: bool,
+    previous_pause_state: bool,
+) -> bool:
+    if not is_kodi_playing:
+        return False
+    if is_kodi_paused != previous_pause_state:
+        if is_kodi_paused:
+            controller.handle_kodi_pause()
+        else:
+            controller.handle_kodi_resume()
+    return is_kodi_paused
+
+
+def kodi_dummy_stop_confirmed(
+    dummy_was_playing: bool,
+    dummy_is_playing: bool,
+    sendspin_is_playing: bool,
+    user_released_audio: bool,
+    missing_seconds: float,
+    grace_seconds: float = 1.0,
+) -> bool:
+    return (
+        dummy_was_playing
+        and not dummy_is_playing
+        and sendspin_is_playing
+        and not user_released_audio
+        and missing_seconds >= grace_seconds
+    )
 
 
 def get_state_volume(state: dict) -> tuple[int, bool] | None:
@@ -70,12 +102,17 @@ class SendspinMonitor(xbmc.Monitor):
         self.controller = controller
         self.log = log
         self.wake_event_triggered = False
+        self.stop_event_triggered = False
         self.audio_device_setting_changed = False
 
     def onNotification(self, sender, method, data):  # noqa: N802 - Kodi callback name
         if method == "System.OnWake":
             self.log.info("System wake notification received.")
             self.wake_event_triggered = True
+        elif method in {"Player.OnStop", "Player.OnAVStop", "Player.OnPlayBackStopped"}:
+            if self.controller._should_forward_kodi_player_event():
+                self.log.info("Kodi playback stop notification received.")
+                self.stop_event_triggered = True
 
     def onSettingsChanged(self):  # noqa: N802 - Kodi callback name
         self.audio_device_setting_changed = True
@@ -87,11 +124,11 @@ async def run_session(controller: SendspinServiceController):
     log.info("--- Sendspin Service Session Starting ---")
 
     try:
-        log.info("Initializing Docker backend...")
+        log.info("Initializing Sendspin control session...")
         await controller.setup()
 
         monitor = SendspinMonitor(controller, log)
-        player = SendspinKodiPlayer(controller)
+        player = SendspinKodiPlayer(controller, monitor)
         dummy_path = os.path.join(ADDON_PATH, "resources", "silent.mp3")
 
         rewind_before_end_seconds = 5.0
@@ -100,11 +137,16 @@ async def run_session(controller: SendspinServiceController):
         last_volume_poll_time = 0.0
         last_seen_sendspin_volume_state = None
         last_seen_kodi_volume_state = None
-        last_seen_title = None
+        last_seen_metadata = None
+        last_kodi_pause_state = False
         current_duration = 0
         audio_claimed = False
+        dummy_playback_unavailable_logged = False
         paused_ticks = 0
         user_released_audio = False
+        stop_requested = False
+        dummy_playback_was_active = False
+        dummy_playback_missing_since = None
         pending_reset_resume = False
         reset_retry_count = 0
         reset_wait_ticks = 0
@@ -115,12 +157,16 @@ async def run_session(controller: SendspinServiceController):
         list_item = xbmcgui.ListItem("Sendspin Active")
         music_tag = list_item.getMusicInfoTag()
         music_tag.setTitle("Sendspin Audio")
-        music_tag.setArtist("Docker System")
+        music_tag.setArtist("Sendspin")
 
         async def start_playback():
             log.info("Starting dummy playback track...")
             player.play(dummy_path, list_item)
             await asyncio.sleep(1.0)
+            try:
+                player.updateInfoTag(list_item)
+            except Exception as e:
+                log.warning(f"Could not update playing info tag after playback start: {e}")
             # Route Kodi's playback stream to virtual null-sink to release physical audio hardware
             await asyncio.get_running_loop().run_in_executor(None, controller.route_kodi_to_null_sink)
             await asyncio.get_running_loop().run_in_executor(None, controller.suspend_physical_sinks, True)
@@ -128,7 +174,7 @@ async def run_session(controller: SendspinServiceController):
             if is_setting_enabled("activate_visualisation_enabled"):
                 xbmc.executebuiltin("ActivateWindow(visualisation)")
 
-        async def recover_backend(reason: str):
+        async def reset_session_state(reason: str):
             nonlocal audio_claimed
             nonlocal user_released_audio
             nonlocal paused_ticks
@@ -136,10 +182,10 @@ async def run_session(controller: SendspinServiceController):
             nonlocal reset_retry_count
             nonlocal reset_wait_ticks
             nonlocal last_seen_sendspin_volume_state
-            nonlocal last_seen_title
+            nonlocal last_seen_metadata
             nonlocal current_duration
 
-            log.warning("Recovering Sendspin backend (%s)...", reason)
+            log.warning("Resetting Kodi session state (%s)...", reason)
             if audio_claimed:
                 log.info("Releasing audio to Kodi before backend recovery...")
                 try:
@@ -147,10 +193,8 @@ async def run_session(controller: SendspinServiceController):
                 except Exception as e:
                     log.warning(f"Could not release audio during backend recovery: {e}")
 
-            try:
-                await controller.restart_backend()
-            except Exception as e:
-                log.error(f"Failed to recover backend: {e}")
+            if controller.native_backend_available:
+                await asyncio.get_running_loop().run_in_executor(None, controller.restart_native_backend)
 
             audio_claimed = False
             user_released_audio = False
@@ -159,7 +203,7 @@ async def run_session(controller: SendspinServiceController):
             reset_retry_count = 0
             reset_wait_ticks = 0
             last_seen_sendspin_volume_state = None
-            last_seen_title = None
+            last_seen_metadata = None
             current_duration = 0
 
         async def handle_kodi_audio_device_change():
@@ -179,11 +223,8 @@ async def run_session(controller: SendspinServiceController):
                 await asyncio.get_running_loop().run_in_executor(None, controller.release_sendspin_audio)
 
             controller.update_sendspin_audio_device(changed_device)
-            try:
-                await controller.restart_backend()
-            except Exception as e:
-                log.error(f"Failed to restart backend after Kodi audio device change: {e}")
-
+            if controller.native_backend_available:
+                await asyncio.get_running_loop().run_in_executor(None, controller.restart_native_backend)
             return True
 
         log.info("Entering Sendspin service loop. Audio will be claimed on active playback.")
@@ -195,16 +236,41 @@ async def run_session(controller: SendspinServiceController):
                 pending_reset_resume = False
                 reset_retry_count = 0
                 reset_wait_ticks = 0
-                last_seen_title = None
+                last_seen_metadata = None
                 current_duration = 0
                 continue
 
             if monitor.wake_event_triggered:
                 monitor.wake_event_triggered = False
-                log.info("Processing wake event: restarting Sendspin backend...")
-                await recover_backend("System.OnWake")
+                log.info("Processing Kodi wake event; resetting session state.")
+                await reset_session_state("System.OnWake")
                 connection_seen = False
                 connection_lost_since = None
+
+            if monitor.stop_event_triggered:
+                monitor.stop_event_triggered = False
+                stop_requested = True
+                dummy_playback_was_active = False
+                dummy_playback_missing_since = None
+                log.info("Processing Kodi stop request; stopping Sendspin playback and releasing audio.")
+                if controller.native_backend_available:
+                    controller.send_stop()
+                if audio_claimed:
+                    await asyncio.get_running_loop().run_in_executor(None, controller.release_sendspin_audio_to_kodi)
+                audio_claimed = False
+                user_released_audio = True
+                pending_reset_resume = False
+                reset_retry_count = 0
+                reset_wait_ticks = 0
+                last_seen_metadata = None
+                paused_ticks = 0
+                try:
+                    if player.isPlaying() and "silent.mp3" in player.getPlayingFile():
+                        controller.suppress_kodi_player_events()
+                        player.stop()
+                except Exception as e:
+                    log.warning(f"Could not stop the dummy Kodi player after manual stop: {e}")
+                continue
 
             was_audio_claimed_before = audio_claimed
             loop_time = asyncio.get_running_loop().time()
@@ -214,9 +280,9 @@ async def run_session(controller: SendspinServiceController):
             audio_state = {}
             sendspin_volume_state = None
 
-            if not sendspin_state and controller.backend_needs_recovery():
-                log.warning("Sendspin backend is unhealthy or unreachable; restarting Docker backend.")
-                await recover_backend("control API unavailable or backend exited")
+            if controller.backend_needs_recovery():
+                log.warning("Native backend process or control socket is unavailable; attempting recovery.")
+                await reset_session_state("native backend unavailable or exited")
                 connection_seen = False
                 connection_lost_since = None
                 continue
@@ -237,7 +303,7 @@ async def run_session(controller: SendspinServiceController):
                             connection_lost_since = loop_time
                             log.warning("Sendspin server connection is no longer active; starting stale-session timer.")
                         elif loop_time - connection_lost_since >= connection_stale_grace_seconds:
-                            await recover_backend("stale Sendspin connection reported by control API")
+                            await reset_session_state("stale Sendspin connection reported by control API")
                             connection_seen = False
                             connection_lost_since = None
                             continue
@@ -249,6 +315,13 @@ async def run_session(controller: SendspinServiceController):
             except (TypeError, ValueError):
                 speed = 0.0
             is_playing = audio_active or speed > 0.0
+
+            if stop_requested:
+                if is_playing:
+                    await asyncio.sleep(poll_interval_seconds)
+                    continue
+                log.info("Sendspin backend confirmed stopped playback.")
+                stop_requested = False
 
             if pending_reset_resume:
                 paused_ticks = 0
@@ -284,9 +357,39 @@ async def run_session(controller: SendspinServiceController):
                 except Exception as e:
                     log.warning(f"Could not read playing file: {e}")
             is_kodi_paused = xbmc.getCondVisibility("Player.Paused") if is_kodi_playing else False
+            last_kodi_pause_state = forward_kodi_pause_state_change(
+                controller, is_kodi_playing, is_kodi_paused, last_kodi_pause_state
+            )
+
+            if is_kodi_playing:
+                dummy_playback_was_active = True
+                dummy_playback_missing_since = None
+            elif not is_playing:
+                dummy_playback_was_active = False
+                dummy_playback_missing_since = None
+            elif dummy_playback_was_active and not user_released_audio:
+                if dummy_playback_missing_since is None:
+                    dummy_playback_missing_since = loop_time
+                    log.info("Kodi dummy player disappeared while Sendspin is playing; checking for a transient gap.")
+                elif kodi_dummy_stop_confirmed(
+                    dummy_playback_was_active,
+                    is_kodi_playing,
+                    is_playing,
+                    user_released_audio,
+                    loop_time - dummy_playback_missing_since,
+                ):
+                    log.info("Kodi dummy player stop confirmed by polling; stopping Sendspin playback.")
+                    monitor.stop_event_triggered = True
+                    continue
+
+                await asyncio.sleep(poll_interval_seconds)
+                continue
 
             if is_kodi_playing:
                 user_released_audio = False
+                dummy_playback_unavailable_logged = False
+            elif not audio_claimed:
+                dummy_playback_unavailable_logged = False
 
             if not has_track and not is_playing and not audio_claimed:
                 # State 3: Stopped/Idle
@@ -332,7 +435,7 @@ async def run_session(controller: SendspinServiceController):
 
                         if acquired:
                             audio_claimed = True
-                            await asyncio.sleep(0.2)  # Give Docker a brief moment to lock the hardware device
+                            await asyncio.sleep(0.2)  # Give the playback backend time to lock the hardware device
                             log.info("Playback active; resetting stream to get headers...")
                             controller.suppress_kodi_player_events(3.0)
                             controller.send_pause()
@@ -350,13 +453,19 @@ async def run_session(controller: SendspinServiceController):
                             controller.release_sendspin_audio_to_kodi()
                             audio_claimed = False
                             user_released_audio = True
-                        elif not user_released_audio:
+                        elif not user_released_audio and (
+                            not audio_claimed or is_setting_enabled("require_dummy_playback")
+                        ):
                             log.info("Sendspin playing but dummy playback inactive: restarting dummy playback...")
                             await start_playback()
                             is_kodi_playing = True
                             is_kodi_paused = False
+                        elif audio_claimed:
+                            if not dummy_playback_unavailable_logged:
+                                log.info("Kodi dummy playback is unavailable; continuing with native Sendspin audio.")
+                                dummy_playback_unavailable_logged = True
 
-                    if is_kodi_playing and is_kodi_paused:
+                    if is_kodi_playing and is_kodi_paused and not controller.kodi_pause_is_pending():
                         log.info("Sendspin playing: resuming Kodi dummy playback.")
                         controller.suppress_kodi_player_events()
                         try:
@@ -431,8 +540,11 @@ async def run_session(controller: SendspinServiceController):
                 title = track_info.get("title")
                 artist = track_info.get("artist") or "Unknown Artist"
                 album = track_info.get("album") or "Unknown Album"
+                artwork_url = track_info.get("artwork_url")
+                metadata = (title, artist, album, artwork_url)
+                title_changed = last_seen_metadata is None or title != last_seen_metadata[0]
 
-                if title and title != last_seen_title:
+                if title and metadata != last_seen_metadata:
                     list_item.setLabel(title)
 
                     tag = list_item.getMusicInfoTag()
@@ -443,21 +555,31 @@ async def run_session(controller: SendspinServiceController):
 
                     list_item.setInfo("music", {"title": title, "artist": artist, "album": album, "mediatype": "song"})
 
-                    log.info(f"Track changed to: {tag.getArtist()} - {tag.getTitle()} ({tag.getAlbum()})")
-                    user_released_audio = False
+                    log.info(
+                        "%s: %s - %s (%s)",
+                        "Track changed to" if title_changed else "Track metadata updated",
+                        tag.getArtist(),
+                        tag.getTitle(),
+                        tag.getAlbum(),
+                    )
+                    if title_changed:
+                        user_released_audio = False
 
-                    thumb = track_info.get("artwork_url")
-                    if thumb:
-                        list_item.setArt({"thumb": thumb})
+                    if artwork_url:
+                        list_item.setArt({"thumb": artwork_url})
 
-                    if is_playing and is_kodi_playing:
+                    if is_kodi_playing:
                         try:
                             player.updateInfoTag(list_item)
                         except Exception as e:
                             log.warning(f"Could not update playing info tag: {e}")
-                    elif is_playing:
+                    elif (
+                        title_changed
+                        and is_playing
+                        and (not audio_claimed or is_setting_enabled("require_dummy_playback"))
+                    ):
                         await start_playback()
-                    last_seen_title = title
+                    last_seen_metadata = metadata
 
             # Handle seeking and duration sync
             if has_track and playback_state and is_kodi_playing:

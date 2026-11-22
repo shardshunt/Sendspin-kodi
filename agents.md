@@ -46,21 +46,34 @@ python3 scripts/get_libs.py
 
 ---
 
-## 4. When Modifying Docker Image Settings or Version
+## 4. When Building the Native Backend
 
-When editing `service.sendspin/docker_image_version.txt` or Docker settings in `service.sendspin/resources/settings.xml`:
+Build all supported architectures before GitHub publishing, without installing
+the toolchain on the host:
 
 ```bash
-tests/docker_image_pull_start_test.sh
+scripts/build_native_backends_all.sh
 ```
+
+For development-only builds or target-specific testing, select an architecture:
+
+```bash
+scripts/build_native_backends_all.sh --arch x86_64
+# (or NATIVE_ARCHES=x86_64 scripts/build_native_backends_all.sh)
+```
+
+Selected builds do not create the full-matrix release record. `scripts/release.py`
+requires a current record and matching binaries; even `--force` cannot bypass it.
 
 ---
 
 ## 5. Before Release or Version Bumps
 
-Verify CalVer versioning, metadata sync (`addon.xml` vs `pyproject.toml`), and ZIP packaging:
+Run the full backend matrix first, then verify CalVer versioning, metadata sync
+(`addon.xml` vs `pyproject.toml`), the matrix record, and ZIP packaging:
 
 ```bash
+scripts/build_native_backends_all.sh
 python3 scripts/release.py --check
 ```
 

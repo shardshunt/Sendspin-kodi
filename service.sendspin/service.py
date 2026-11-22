@@ -1,14 +1,16 @@
 import asyncio
 import logging
 import os
+import platform
 import re
 import subprocess
+import threading
 import time
 import xml.etree.ElementTree as ET
 
 import xbmcaddon
+import xbmcgui
 import xbmcvfs
-from audio import DockerPlaybackEngine
 from control import SendspinControlClient
 from kodi import KodiManager
 
@@ -18,88 +20,203 @@ class SendspinServiceController:
         self.logger = logging.getLogger("sendspin")
         addon = xbmcaddon.Addon()
         control_url = addon.getSetting("control_url") or self._control_url_from_port(addon)
-        config_dir = self._get_writable_config_dir(addon)
-        self.playback_engine = DockerPlaybackEngine(
-            image_name=addon.getSetting("docker_image_name") or "ghcr.io/shardshunt/sendspin-cli-for-sendspin-kodi",
-            container_name=addon.getSetting("docker_container_name") or "sendspin-player",
-            config_dir=config_dir,
-            image_version=self._get_image_version(addon),
-            volume_scale=self._get_volume_scale(addon),
-            control_url=control_url,
+        addon_path = addon.getAddonInfo("path")
+        configured_backend_path = (addon.getSetting("backend_path") or "").strip()
+        self.backend_path = configured_backend_path or self._default_backend_path(addon_path)
+        self._ensure_backend_executable()
+        profile_path = addon.getAddonInfo("profile")
+        if profile_path:
+            try:
+                profile_path = xbmcvfs.translatePath(profile_path)
+            except Exception:
+                pass
+        self.profile_path = profile_path or os.path.join(
+            os.path.expanduser("~"), ".kodi", "userdata", "addon_data", "service.sendspin"
         )
-        self.docker_start_enabled = addon.getSetting("docker_start_enabled") != "false"
-        self.control = SendspinControlClient(control_url)
+        self.state_file = os.path.join(self.profile_path, "sendspin", "state.json")
+        self.control_socket_path = os.path.join(self.profile_path, "sendspin", "control.sock")
+        self.server_url = addon.getSetting("server_url").strip()
+        self.player_name = addon.getSetting("player_name") or "Kodi"
+        self.native_backend_available = os.path.isfile(self.backend_path) and os.access(self.backend_path, os.X_OK)
+        self.backend_process = None
+        self._backend_log_thread = None
+        self._native_backend_retry_at = 0.0
+        self.volume_scale = self._get_volume_scale(addon)
+        self.audio_device_id = "0"
+        self.audio_device_override = False
+        self.control = SendspinControlClient(
+            control_url,
+            socket_path=self.control_socket_path if self.native_backend_available else None,
+        )
         self.kodi = KodiManager()
         self.original_kodi_device = None
         self.original_streamsilence = None
         self.original_default_sink = None
+        self.original_card_profiles = {}
         self._suppress_kodi_player_events_until = 0.0
+        self._kodi_pause_pending_until = 0.0
         self._last_applied_delay_ms = None
         self._profile_settings_missing_logged = False
         self._audio_claimed = False
         self._last_kodi_audio_device = None
 
-        # Check for version mismatch due to stale persisted settings
-        addon_version = addon.getAddonInfo("version")
-        image_version = addon.getSetting("docker_image_version")
-        if image_version and image_version != addon_version:
-            self.logger.warning(
-                "Version mismatch detected! Add-on version is '%s' but configured Docker image version is '%s'. "
-                "This is likely due to stale persisted settings. Please go to Add-on settings and choose 'Reset to defaults', "
-                "or manually update the Docker image version to '%s' to prevent command errors.",
-                addon_version,
-                image_version,
-                addon_version,
-            )
+    @staticmethod
+    def _architecture_name(machine=None):
+        machine = (machine or platform.machine()).lower()
+        architecture_aliases = {
+            "amd64": "x86_64",
+            "x86-64": "x86_64",
+            "x86_64": "x86_64",
+            "i386": "i386",
+            "i486": "i386",
+            "i586": "i386",
+            "i686": "i386",
+            "aarch64": "aarch64",
+            "arm64": "aarch64",
+            "armv7": "armv7",
+            "armv7l": "armv7",
+            "armhf": "armv7",
+        }
+        return architecture_aliases.get(machine, machine)
+
+    @classmethod
+    def _default_backend_path(cls, addon_path):
+        backend_root = os.path.join(addon_path, "resources", "bin")
+        architecture_path = os.path.join(backend_root, cls._architecture_name(), "sendspin-kodi-backend")
+        legacy_path = os.path.join(backend_root, "sendspin-kodi-backend")
+        if os.path.isfile(architecture_path):
+            return architecture_path
+        return legacy_path
+
+    def _ensure_backend_executable(self) -> None:
+        if os.path.isfile(self.backend_path) and not os.access(self.backend_path, os.X_OK):
+            try:
+                current_mode = os.stat(self.backend_path).st_mode
+                os.chmod(self.backend_path, current_mode | 0o755)
+                self.logger.info("Restored execute permissions on backend binary: %s", self.backend_path)
+            except Exception as e:
+                self.logger.warning("Could not set execute permissions on %s: %s", self.backend_path, e)
 
     def _control_url_from_port(self, addon) -> str:
         port = addon.getSetting("proxy_port") or "59999"
         return f"http://127.0.0.1:{port}"
 
-    def _get_writable_config_dir(self, addon) -> str:
-        config_dir = addon.getSetting("docker_config_dir") or "/storage/.config/sendspin"
+    def _forward_backend_logs(self) -> None:
+        process = self.backend_process
+        if process is None or process.stdout is None:
+            return
+        for line in process.stdout:
+            self.logger.info("Native backend: %s", line.rstrip())
 
-        # Check if the directory (or its closest existing parent) is writable
-        is_writable = False
-        try:
-            test_dir = os.path.abspath(config_dir)
-            parent = test_dir
-            # Traverse up to find the first existing directory
-            while parent and parent != os.path.dirname(parent) and not os.path.exists(parent):
-                parent = os.path.dirname(parent)
-            if parent and os.path.exists(parent) and os.access(parent, os.W_OK):
-                is_writable = True
-        except Exception:
-            is_writable = False
+    def _start_native_backend(self) -> bool:
+        if not self.native_backend_available:
+            self.logger.error("Native backend executable is missing or not executable: %s", self.backend_path)
+            return False
 
-        if is_writable:
-            return config_dir
-
-        # Fallback to addon profile directory
-        profile_path = addon.getAddonInfo("profile")
-        if profile_path:
-            try:
-                real_profile = xbmcvfs.translatePath(profile_path)
-                if real_profile:
-                    fallback_dir = os.path.join(real_profile, "sendspin")
-                    self.logger.warning(
-                        "Configured Docker config directory '%s' is not writable or cannot be created. "
-                        "Falling back to profile directory: '%s'",
-                        config_dir,
-                        fallback_dir,
-                    )
-                    return fallback_dir
-            except Exception as e:
-                self.logger.warning("Failed to translate profile path '%s': %s", profile_path, e)
-
-        # Ultimate fallback to user home directory
-        fallback_dir = os.path.expanduser("~/.config/sendspin")
-        self.logger.warning(
-            "Configured Docker config directory '%s' is not writable. Falling back to user home: '%s'",
-            config_dir,
-            fallback_dir,
+        command = [
+            self.backend_path,
+            "--name",
+            self.player_name,
+            "--state-file",
+            self.state_file,
+            "--control-socket",
+            self.control_socket_path,
+        ]
+        volume_state = self.kodi.get_volume_state()
+        if not isinstance(volume_state, dict):
+            volume_state = {"volume": 100, "muted": False}
+        addon = xbmcaddon.Addon()
+        volume = max(0, min(100, round(int(volume_state.get("volume", 100)) * self.volume_scale)))
+        delay_ms = round(self._get_delay_ms(addon))
+        command.extend(
+            [
+                "--volume",
+                str(volume),
+                "--muted",
+                "true" if volume_state.get("muted", False) else "false",
+                "--delay-ms",
+                str(delay_ms),
+            ]
         )
-        return fallback_dir
+        if self.server_url:
+            command.extend(["--server", self.server_url])
+
+        backend_environment = os.environ.copy()
+        backend_environment["SENDSPIN_AUDIO_DEVICE"] = self.audio_device_id
+
+        try:
+            self.backend_process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=backend_environment,
+            )
+        except OSError as error:
+            self.logger.error("Could not launch native backend %s: %s", self.backend_path, error)
+            self.backend_process = None
+            self._native_backend_retry_at = time.monotonic() + 5.0
+            return False
+
+        self._backend_log_thread = threading.Thread(target=self._forward_backend_logs, daemon=True)
+        self._backend_log_thread.start()
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if self.backend_process.poll() is not None:
+                self.logger.error(
+                    "Native backend exited during startup with status %s", self.backend_process.returncode
+                )
+                self._native_backend_retry_at = time.monotonic() + 5.0
+                return False
+            if self.control.get_state() is not None:
+                volume_state = self.kodi.get_volume_state()
+                if not isinstance(volume_state, dict):
+                    volume_state = {"volume": 100, "muted": False}
+                self.control.set_volume(
+                    max(0, min(100, round(int(volume_state.get("volume", 100)) * self.volume_scale))),
+                    bool(volume_state.get("muted", False)),
+                )
+                delay_ms = self._get_delay_ms(xbmcaddon.Addon())
+                if self.control.set_delay(delay_ms):
+                    self._last_applied_delay_ms = delay_ms
+                self._native_backend_retry_at = 0.0
+                self.logger.info("Native backend control socket is ready.")
+                return True
+            time.sleep(0.1)
+
+        self.logger.error("Native backend did not become ready within 15 seconds.")
+        self._stop_native_backend()
+        self._native_backend_retry_at = time.monotonic() + 5.0
+        return False
+
+    def _stop_native_backend(self) -> None:
+        process = self.backend_process
+        if process is None:
+            return
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        self.backend_process = None
+
+    def restart_native_backend(self) -> bool:
+        if not self.native_backend_available:
+            return False
+        if time.monotonic() < self._native_backend_retry_at:
+            return False
+        self._stop_native_backend()
+        return self._start_native_backend()
+
+    def backend_needs_recovery(self) -> bool:
+        if not self.native_backend_available or time.monotonic() < self._native_backend_retry_at:
+            return False
+        if self.backend_process is None or self.backend_process.poll() is not None:
+            return True
+        return self.control.get_state() is None
 
     def _get_volume_scale(self, addon) -> float:
         fallback = 0.3
@@ -133,29 +250,6 @@ class SendspinServiceController:
             return 5000.0
 
         return delay
-
-    def _get_image_version(self, addon) -> str:
-        version_file = os.path.join(addon.getAddonInfo("path"), "docker_image_version.txt")
-        try:
-            with open(version_file, encoding="utf-8") as file:
-                image_version = file.read().strip()
-        except OSError as exc:
-            self.logger.warning(
-                "Could not read Docker image version file %s: %s; using untagged image",
-                version_file,
-                exc,
-            )
-            return ""
-
-        if image_version:
-            self.logger.info("Using Docker image version from %s: %s", version_file, image_version)
-            return image_version
-
-        self.logger.warning(
-            "Docker image version file %s is empty; using untagged image",
-            version_file,
-        )
-        return ""
 
     def _get_delay_ms(self, addon) -> float:
         fallback = 0.0
@@ -233,6 +327,7 @@ class SendspinServiceController:
         self.original_kodi_device = device_string
         addon = xbmcaddon.Addon()
         override = addon.getSetting("audio_device_override")
+        self.audio_device_override = bool(override)
         if override:
             audio_device_id = override
         elif device_string:
@@ -240,7 +335,7 @@ class SendspinServiceController:
         else:
             audio_device_id = addon.getSetting("fallback_audio_device") or "0"
 
-        self.playback_engine.audio_device = audio_device_id
+        self.audio_device_id = audio_device_id
         self._last_kodi_audio_device = device_string
         self.logger.info("Updated Sendspin audio device: %s", audio_device_id)
         return audio_device_id
@@ -284,6 +379,66 @@ class SendspinServiceController:
             return bool(status.get("released", False))
         return False
 
+    def _get_default_sink_alsa_device(self) -> str | None:
+        """Resolve the active PipeWire/PulseAudio default sink to an ALSA hw:card,device identity."""
+        import shutil
+
+        if not shutil.which("pactl"):
+            return None
+
+        try:
+            res = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=5)
+            default_sink = res.stdout.strip()
+            if not default_sink or default_sink == "dummy_sink":
+                return None
+
+            res_sinks = subprocess.run(["pactl", "list", "sinks"], capture_output=True, text=True, timeout=5)
+            sink_blocks = re.split(r"(?m)^Sink #", res_sinks.stdout)
+            for block in sink_blocks:
+                if f"Name: {default_sink}" in block:
+                    card_m = re.search(r'alsa\.card\s*=\s*"(\d+)"', block)
+                    dev_m = re.search(r'alsa\.device\s*=\s*"(\d+)"', block)
+                    if card_m and dev_m:
+                        return f"hw:{card_m.group(1)},{dev_m.group(1)}"
+        except Exception as e:
+            self.logger.debug("Failed to resolve default sink ALSA device from pactl: %s", e)
+        return None
+
+    @staticmethod
+    def _parse_proc_asound() -> tuple[dict[int, str], list[dict]]:
+        """Parse /proc/asound/cards and /proc/asound/pcm when aplay is unavailable."""
+        hardware_cards: dict[int, str] = {}
+        global_device_list: list[dict] = []
+        try:
+            if os.path.isfile("/proc/asound/cards"):
+                with open("/proc/asound/cards", encoding="utf-8") as f:
+                    for line in f:
+                        m = re.match(r"^\s*(\d+)\s+\[(.*?)\s*\]:\s*(.*)", line)
+                        if m:
+                            card_idx = int(m.group(1))
+                            card_desc = m.group(3).strip()
+                            parts = card_desc.split(" - ")
+                            hardware_cards[card_idx] = parts[-1] if len(parts) > 1 else card_desc
+        except Exception:
+            pass
+
+        try:
+            if os.path.isfile("/proc/asound/pcm"):
+                with open("/proc/asound/pcm", encoding="utf-8") as f:
+                    for line in f:
+                        m = re.match(r"^\s*(\d+)-(\d+):\s*(.*?)\s*:\s*(.*?)\s*:\s*(.*)", line)
+                        if m:
+                            card_idx = int(m.group(1))
+                            dev_idx = int(m.group(2))
+                            label = m.group(3).strip()
+                            streams = m.group(5)
+                            if "playback" in streams:
+                                global_device_list.append({"card": card_idx, "device": dev_idx, "label": label})
+        except Exception:
+            pass
+
+        return hardware_cards, global_device_list
+
     def _get_audio_device_id(self, device_string: str) -> str:
         """Maps Kodi strings to ALSA indices by matching both hardware numbers and port labels."""
         fallback = xbmcaddon.Addon().getSetting("fallback_audio_device") or "0"
@@ -298,6 +453,12 @@ class SendspinServiceController:
         if not is_default and "alsa:" not in clean_dev:
             return fallback
 
+        if is_default:
+            default_alsa = self._get_default_sink_alsa_device()
+            if default_alsa:
+                self.logger.info("Resolved system default audio sink to ALSA device %s", default_alsa)
+                return default_alsa
+
         # 1. Parse Kodi string (e.g., CARD=HDMI,DEV=4)
         card_match = re.search(r"CARD=([^,|]+)", device_string)
         dev_match = re.search(r"DEV=(\d+)", device_string)
@@ -309,30 +470,37 @@ class SendspinServiceController:
         target_dev_num = int(dev_match.group(1)) if dev_match else None
 
         try:
-            # 2. Capture hardware state
-            result = subprocess.run(["aplay", "-l"], capture_output=True, text=True, timeout=10)
-            if result.returncode != 0:
-                return fallback
-
-            lines = result.stdout.split("\n")
             hardware_cards = {}  # {card_idx: "Long Name"}
             global_device_list = []  # List of {'card': idx, 'device': idx, 'label': str}
 
-            for line in lines:
-                if line.startswith("card "):
-                    card_idx = int(line.split(":")[0].split()[1])
+            try:
+                # 2. Capture hardware state
+                result = subprocess.run(["aplay", "-l"], capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    lines = result.stdout.split("\n")
+                    for line in lines:
+                        if line.startswith("card "):
+                            card_idx = int(line.split(":")[0].split()[1])
 
-                    # Update card names map
-                    name_bracket = re.search(r"\[(.*?)\]", line)
-                    if name_bracket and card_idx not in hardware_cards:
-                        hardware_cards[card_idx] = name_bracket.group(1)
+                            # Update card names map
+                            name_bracket = re.search(r"\[(.*?)\]", line)
+                            if name_bracket and card_idx not in hardware_cards:
+                                hardware_cards[card_idx] = name_bracket.group(1)
 
-                    # Extract device index and its label (e.g., "HDMI 4 [Panasonic-TV]")
-                    dev_info = re.search(r"device (\d+): (.*)", line)
-                    if dev_info:
-                        global_device_list.append(
-                            {"card": card_idx, "device": int(dev_info.group(1)), "label": dev_info.group(2)}
-                        )
+                            # Extract device index and its label (e.g., "HDMI 4 [Panasonic-TV]")
+                            dev_info = re.search(r"device (\d+): (.*)", line)
+                            if dev_info:
+                                global_device_list.append(
+                                    {"card": card_idx, "device": int(dev_info.group(1)), "label": dev_info.group(2)}
+                                )
+            except Exception as e:
+                self.logger.debug("aplay -l unavailable or failed: %s", e)
+
+            if not hardware_cards and not global_device_list:
+                hardware_cards, global_device_list = self._parse_proc_asound()
+
+            if not hardware_cards and not global_device_list:
+                return fallback
 
             # If Kodi is using a generic/software device, use the configured
             # fallback. Numeric fallbacks retain their legacy aplay ordering
@@ -371,20 +539,29 @@ class SendspinServiceController:
             # Filter global list to only devices on our matched card
             card_devices = [d for d in global_device_list if d["card"] == matched_card_idx]
 
-            # Step A: Look for exact numerical device match
-            for d in card_devices:
-                if d["device"] == target_dev_num:
-                    final_device_idx = d["device"]
-                    break
-
-            # Step B: If no exact index, search for the target number in the labels
-            if final_device_idx is None:
-                target_str = str(target_dev_num)
+            # Kodi's HDMI DEV number is often a port number, not ALSA's PCM
+            # index. Prefer its HDMI label before accepting a numeric match.
+            if "hdmi" in clean_dev:
                 for d in card_devices:
-                    # Matches if "4" appears in "HDMI 4 [Panasonic-TV]"
-                    if target_str in d["label"]:
+                    if re.search(rf"\bHDMI\s+{target_dev_num}\b", d["label"], re.IGNORECASE):
                         self.logger.info(
-                            f"Matched Kodi DEV={target_str} to ALSA Device {d['device']} via label: {d['label']}"
+                            f"Matched Kodi DEV={target_dev_num} to ALSA Device {d['device']} via label: {d['label']}"
+                        )
+                        final_device_idx = d["device"]
+                        break
+
+            if final_device_idx is None:
+                for d in card_devices:
+                    if d["device"] == target_dev_num:
+                        final_device_idx = d["device"]
+                        break
+
+            if final_device_idx is None:
+                device_number_pattern = rf"(?<!\d){target_dev_num}(?!\d)"
+                for d in card_devices:
+                    if re.search(device_number_pattern, d["label"]):
+                        self.logger.info(
+                            f"Matched Kodi DEV={target_dev_num} to ALSA Device {d['device']} via label: {d['label']}"
                         )
                         final_device_idx = d["device"]
                         break
@@ -393,11 +570,6 @@ class SendspinServiceController:
                 self.logger.error(f"Device {target_dev_num} not found by index or label on Card {matched_card_idx}.")
                 return fallback
 
-            # 5. Pass the hardware identity to Sendspin instead of a global
-            # ordinal. The set/order of PortAudio devices can change when an
-            # HDMI endpoint is re-enumerated (especially after a backend
-            # restart), while hw:<card>,<device> remains tied to the target
-            # ALSA PCM.
             return f"hw:{matched_card_idx},{final_device_idx}"
 
         except Exception as e:
@@ -446,156 +618,48 @@ class SendspinServiceController:
     async def setup(self) -> None:
         self.original_kodi_device = self.kodi.get_audio_output_device()
         self._last_kodi_audio_device = self.original_kodi_device
-        self.logger.info(f"Captured original audio device: {self.original_kodi_device}")
+        self.logger.info("Captured original Kodi audio device: %s", self.original_kodi_device)
+        if self.original_kodi_device and any(
+            name in self.original_kodi_device.lower() for name in ("pipewire", "pulse")
+        ):
+            self.logger.warning("Captured Kodi audio device is a software fallback: %s", self.original_kodi_device)
+        self.update_sendspin_audio_device(self.original_kodi_device)
 
-        # Check if the captured device is a software candidate (leftover from previous crash)
-        if self.original_kodi_device and any(x in self.original_kodi_device.lower() for x in ["pipewire", "pulse"]):
-            self.logger.warning(
-                f"Captured device '{self.original_kodi_device}' looks like a software fallback "
-                "left over from a previous unclean shutdown. Overriding original device to 'ALSA:default'."
-            )
-            self.original_kodi_device = "ALSA:default"
-
-        # Force keep-alive streamsilence to Off (0) to allow immediate release of the audio device
-        self.original_streamsilence = self.kodi.get_setting_value("audiooutput.streamsilence")
-        self.logger.info(f"Captured original streamsilence: {self.original_streamsilence}")
-        self.kodi.set_setting_value("audiooutput.streamsilence", 0)
-        self.setup_pipewire_null_sink()
-        self.set_default_sink_to_null()
-        self.suspend_physical_sinks(True)
-
-        # Temporarily free Kodi's audio device so the Docker container can probe all devices (including busy ones)
-        switched_temp = False
-        if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
-            self.logger.info("Temporarily freeing Kodi audio device to allow Docker backend device probing...")
-            self._switch_to_alternate()
-            current_device = self.kodi.get_audio_output_device()
-            if current_device != self.original_kodi_device:
-                switched_temp = True
-                # Wait for Kodi to release the ALSA device and PipeWire to suspend
-                released = False
-                for _ in range(30):
-                    if not self.is_kodi_holding_pcm():
-                        released = True
-                        break
-                    await asyncio.sleep(0.5)
-                if released:
-                    self.logger.info("Verified Kodi has released the physical ALSA device.")
-                else:
-                    self.logger.warning("Timeout waiting for Kodi to release the physical ALSA device.")
-                await asyncio.sleep(1.0)  # Settle time
-
-        kodi_volume = self.kodi.get_volume_state()
-        addon = xbmcaddon.Addon()
-        delay_ms = self._get_delay_ms(addon)
-        self.playback_engine.configure_volume_sync(kodi_volume["volume"], kodi_volume["muted"], delay_ms)
-        self._last_applied_delay_ms = delay_ms
-
-        # Extract audio device ID for Docker
-        audio_device_id = self.update_sendspin_audio_device(self.original_kodi_device)
-        self.logger.info(f"Extracted audio device ID: {audio_device_id}")
-
-        try:
-            if self.docker_start_enabled:
-                self.playback_engine.start()
-            else:
-                self.logger.info("Docker backend startup disabled by addon setting.")
-                if self._last_applied_delay_ms is not None:
-                    self.control.set_delay(self._last_applied_delay_ms)
-
-            if self.wait_for_control_api():
-                self.logger.info("Docker backend started with release-audio-on-start; no manual release required.")
-            elif self.backend_needs_recovery():
-                self.logger.warning(
-                    "Sendspin control API did not become available during setup; restarting the Docker backend."
+        if self.native_backend_available:
+            self.logger.info("Leaving Kodi audio routing unchanged until Sendspin playback starts.")
+            ready = await asyncio.get_running_loop().run_in_executor(None, self._start_native_backend)
+            if not ready:
+                self.logger.error("Native backend failed to start; Kodi audio routing remains unchanged.")
+        else:
+            if os.path.isfile(self.backend_path):
+                self.logger.error(
+                    "Native backend executable is not executable at %s; playback is unavailable.", self.backend_path
                 )
-                await asyncio.get_running_loop().run_in_executor(None, self.restart_backend)
-                if not self.wait_for_control_api(timeout_seconds=20.0):
-                    self.logger.warning("Sendspin backend remained unavailable after restart during setup.")
             else:
-                self.logger.warning("Sendspin control API did not become available during setup.")
-        finally:
-            # Restore original device after Docker has started/probed and server had time to connect/handshake
-            if switched_temp or self.original_default_sink is not None:
-                self.logger.info(
-                    "Waiting for server connection and format probing before restoring Kodi audio device..."
+                self.logger.error(
+                    "Native backend executable is not installed at %s; playback is unavailable.", self.backend_path
                 )
-                await asyncio.sleep(8.0)  # Wait 8 seconds for server connection and format probing to complete cleanly
-                self.logger.info("Restoring original Kodi audio device after Docker startup...")
-                self.restore_kodi_audio_device()
-
-    async def restart_backend(self) -> None:
-        if not self.docker_start_enabled:
-            self.logger.info("Docker backend startup disabled; skipping backend restart.")
-            return
-
-        self.logger.info("Restarting Sendspin Docker backend on wake...")
-
-        # Refresh the audio-device mapping before restarting so a newly launched container
-        # doesn't inherit a stale ALSA hw:<card>,<device> value from an earlier run.
-        configured_kodi_device = self.original_kodi_device
-        current_kodi_device = self.kodi.get_audio_output_device() or configured_kodi_device
-        restoring_temporary_device = (
-            configured_kodi_device
-            and current_kodi_device
-            and "alsa" in configured_kodi_device.lower()
-            and any(name in current_kodi_device.lower() for name in ("pipewire", "pulse"))
-        )
-        restore_device = configured_kodi_device if restoring_temporary_device else current_kodi_device
-        if current_kodi_device:
-            refreshed_device = self.update_sendspin_audio_device(current_kodi_device)
-            if restore_device:
-                self.original_kodi_device = restore_device
-            self.playback_engine.audio_device = refreshed_device
-            self.logger.info("Refreshed Sendspin audio device for restart: %s", refreshed_device)
-
-        # 1. Capture current Kodi state to write to daemon settings before starting
-        kodi_volume = self.kodi.get_volume_state()
-        addon = xbmcaddon.Addon()
-        delay_ms = self._get_delay_ms(addon)
-        self.playback_engine.configure_volume_sync(kodi_volume["volume"], kodi_volume["muted"], delay_ms)
-        self._last_applied_delay_ms = delay_ms
-
-        # 2. Release Kodi's hardware device before restarting the container
-        switched_temp = False
-        if current_kodi_device and "alsa" in current_kodi_device.lower():
-            self.logger.info("Temporarily freeing Kodi audio device before backend restart...")
-            self._switch_to_alternate()
-            if self.kodi.get_audio_output_device() != current_kodi_device:
-                switched_temp = True
-                for _ in range(30):
-                    if not self.is_kodi_holding_pcm():
-                        self.logger.info("Verified Kodi has released the physical ALSA device.")
-                        break
-                    await asyncio.sleep(0.5)
-                else:
-                    self.logger.warning("Timeout waiting for Kodi to release the physical ALSA device.")
-                await asyncio.sleep(1.0)
-
-        # 3. Stop and restart the container
-        # Run blocking/synchronous docker commands in an executor to avoid blocking the asyncio event loop
-        loop = asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(None, self.playback_engine.stop)
-            await loop.run_in_executor(None, self.playback_engine.start)
-
-            # 4. Wait for the API to become ready
-            api_ready = await loop.run_in_executor(None, self.wait_for_control_api)
-            if api_ready:
-                self.logger.info("Docker backend restarted successfully and control API is ready.")
-            else:
-                self.logger.warning("Sendspin control API did not become available after backend restart.")
-        finally:
-            if switched_temp:
-                await asyncio.sleep(8.0)
-                self.restore_kodi_audio_device()
 
     def _switch_to_alternate(self):
         if not self.original_kodi_device:
             return False
 
         options = self.kodi.get_audio_output_device_options()
+        options = [
+            option
+            for option in options
+            if isinstance(option, dict)
+            and isinstance(option.get("value"), str)
+            and option["value"].strip()
+            and option["value"].strip().lower() not in {"error", "none"}
+        ]
         if not options:
+            if self.original_kodi_device.strip().lower() in {"default", "sysdefault"}:
+                self.logger.warning(
+                    "Kodi did not expose a valid alternate audio device for generic %s; leaving the setting unchanged.",
+                    self.original_kodi_device,
+                )
+                return False
             self.logger.warning("Could not retrieve audio output device options from Kodi; using static fallbacks.")
             # Fall back to static candidates as a safety measure
             candidates = ["ALSA:pipewire", "PULSE:default", "ALSA:sysdefault"]
@@ -660,6 +724,12 @@ class SendspinServiceController:
             return
 
         try:
+            sinks = subprocess.run(
+                ["pactl", "list", "short", "sinks"], capture_output=True, text=True, timeout=5
+            ).stdout
+            if not any(line.split("\t")[1:2] == ["dummy_sink"] for line in sinks.splitlines()):
+                self.logger.warning("PipeWire dummy sink is unavailable; leaving the default sink unchanged.")
+                return
             res = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=5)
             curr_sink = res.stdout.strip()
             if curr_sink and curr_sink != "dummy_sink":
@@ -778,54 +848,81 @@ class SendspinServiceController:
         except Exception as e:
             self.logger.warning(f"Failed to manage physical sink suspend state: {e}")
 
-    def backend_needs_recovery(self) -> bool:
-        """Return true when the Docker backend or control API is no longer healthy."""
-        if not self.docker_start_enabled:
-            return False
+    def _physical_card_profiles(self) -> dict[str, str]:
+        """Return active profiles for cards that currently expose physical sinks."""
+        import shutil
+
+        if not shutil.which("pactl"):
+            return {}
 
         try:
-            exists = self.playback_engine._container_exists()
-            running = self.playback_engine._container_is_running() if exists else False
-        except Exception as exc:  # pragma: no cover - defensive safety net
-            self.logger.warning("Could not inspect Sendspin Docker container health: %s", exc)
-            exists = False
-            running = False
+            sinks = subprocess.run(
+                ["pactl", "list", "short", "sinks"], capture_output=True, text=True, timeout=5
+            ).stdout.splitlines()
+            cards = subprocess.run(
+                ["pactl", "list", "short", "cards"], capture_output=True, text=True, timeout=5
+            ).stdout.splitlines()
+            card_details = subprocess.run(["pactl", "list", "cards"], capture_output=True, text=True, timeout=5).stdout
+            card_names = [line.split("\t")[1] for line in cards if len(line.split("\t")) >= 2]
+            profiles = {}
+            for line in sinks:
+                parts = line.split("\t")
+                if len(parts) < 2 or parts[1] == "dummy_sink":
+                    continue
+                sink_name = parts[1]
+                sink_prefix = sink_name.removeprefix("alsa_output.")
+                for card_name in card_names:
+                    card_prefix = card_name.removeprefix("alsa_card.")
+                    if sink_prefix.startswith(card_prefix):
+                        profile = ""
+                        for card_block in re.split(r"(?m)^Card #", card_details):
+                            if f"Name: {card_name}" not in card_block:
+                                continue
+                            profile_match = re.search(r"(?m)^\s*Active Profile:\s*(\S+)", card_block)
+                            if profile_match:
+                                profile = profile_match.group(1)
+                            break
+                        if profile:
+                            profiles[card_name] = profile
+                        break
+            return profiles
+        except Exception as error:
+            self.logger.warning(f"Could not capture PipeWire card profiles: {error}")
+            return {}
 
-        try:
-            audio_status = self.control.audio_status()
-            state = self.control.get_state()
-        except Exception:
-            audio_status = None
-            state = None
+    def disable_physical_card_profiles(self) -> None:
+        """Disable PipeWire card profiles so native ALSA can claim the hardware."""
+        import shutil
 
-        api_healthy = isinstance(audio_status, dict) or isinstance(state, dict)
-        if api_healthy:
-            return False
+        if not shutil.which("pactl") or self.original_card_profiles:
+            return
 
-        if exists and not running:
-            self.logger.warning("Sendspin Docker container exists but is not running. Recovery required.")
-            return True
+        self.original_card_profiles = self._physical_card_profiles()
+        for card_name in self.original_card_profiles:
+            try:
+                self.logger.info(f"Disabling PipeWire card profile '{card_name}' for native playback...")
+                subprocess.run(["pactl", "set-card-profile", card_name, "off"], timeout=5, check=False)
+            except Exception as error:
+                self.logger.warning(f"Could not disable PipeWire card profile {card_name}: {error}")
 
-        if running:
-            self.logger.warning(
-                "Sendspin control API is unreachable while the container is running. Recovery required."
-            )
-            return True
+    def restore_physical_card_profiles(self) -> None:
+        """Restore PipeWire card profiles captured before native playback."""
+        import shutil
 
-        self.logger.warning(
-            "Sendspin backend is unavailable and no healthy control API is responding. Recovery required."
-        )
-        return True
+        if not shutil.which("pactl"):
+            return
 
-    def wait_for_control_api(self, timeout_seconds: float = 20.0, interval_seconds: float = 0.5) -> bool:
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            if self.control.audio_status() is not None or self.control.get_state() is not None:
-                return True
-            time.sleep(interval_seconds)
-        return False
+        profiles = self.original_card_profiles
+        self.original_card_profiles = {}
+        for card_name, profile in profiles.items():
+            try:
+                self.logger.info(f"Restoring PipeWire card profile '{card_name}' to '{profile}'...")
+                subprocess.run(["pactl", "set-card-profile", card_name, profile], timeout=5, check=False)
+            except Exception as error:
+                self.logger.warning(f"Could not restore PipeWire card profile {card_name}: {error}")
 
     def restore_kodi_audio_device(self) -> bool:
+        self.restore_physical_card_profiles()
         self.restore_default_sink()
         self.suspend_physical_sinks(False)
         if self.original_streamsilence is not None:
@@ -835,20 +932,49 @@ class SendspinServiceController:
 
         if not self.original_kodi_device:
             return False
+        restore_device = self.original_kodi_device
+        if self.audio_device_override or any(name in restore_device.lower() for name in ("pulse", "pipewire")):
+            target_device = self._kodi_device_for_alsa_target(self.audio_device_id)
+            if target_device:
+                restore_device = target_device
+
         current_device = self.kodi.get_audio_output_device()
-        if current_device == self.original_kodi_device:
+        if current_device == restore_device:
             return True
-        self.logger.info(f"Restoring Kodi audio device to: {self.original_kodi_device}")
-        return bool(self._set_kodi_audio_device(self.original_kodi_device))
+        self.logger.info("Restoring Kodi audio device to: %s", restore_device)
+        return bool(self._set_kodi_audio_device(restore_device))
+
+    def _kodi_device_for_alsa_target(self, target_device: str) -> str | None:
+        if not target_device.startswith("hw:"):
+            return None
+
+        for option in self.kodi.get_audio_output_device_options():
+            value = option.get("value") if isinstance(option, dict) else None
+            if not isinstance(value, str) or "alsa:" not in value.lower():
+                continue
+            if not re.search(r"CARD=[^,|]+,DEV=\d+", value, re.IGNORECASE):
+                continue
+            if self._get_audio_device_id(value) == target_device:
+                return value
+        return None
 
     def prepare_kodi_audio_for_sendspin(self) -> None:
-        if self.original_kodi_device and "alsa" in self.original_kodi_device.lower():
+        device_text = (self.original_kodi_device or "").lower()
+        hardware_audio = (
+            "alsa" in device_text
+            or "default" in device_text
+            or "sysdefault" in device_text
+            or self.audio_device_id.startswith("hw:")
+        )
+        if hardware_audio:
             if self.original_streamsilence is None:
                 self.original_streamsilence = self.kodi.get_setting_value("audiooutput.streamsilence")
                 self.kodi.set_setting_value("audiooutput.streamsilence", 0)
             self._switch_to_alternate()
+            self.setup_pipewire_null_sink()
             self.set_default_sink_to_null()
             self.suspend_physical_sinks(True)
+            self.disable_physical_card_profiles()
 
     def acquire_sendspin_audio(self) -> bool:
         if self._audio_claimed and not self.is_sendspin_audio_released():
@@ -877,13 +1003,13 @@ class SendspinServiceController:
         return self.kodi.get_volume_state()
 
     def apply_sendspin_volume_to_kodi(self, volume, muted=False):
-        kodi_volume = self.playback_engine.sendspin_to_kodi_volume(volume)
+        kodi_volume = max(0, min(100, round(int(volume) / self.volume_scale)))
         self.kodi.set_muted(bool(muted))
         self.kodi.set_volume(kodi_volume)
         return kodi_volume
 
     def apply_kodi_volume_to_sendspin(self, volume_state):
-        sendspin_volume = self.playback_engine.kodi_to_sendspin_volume(volume_state["volume"])
+        sendspin_volume = max(0, min(100, round(int(volume_state["volume"]) * self.volume_scale)))
         self.control.set_volume(sendspin_volume, volume_state["muted"])
         return sendspin_volume
 
@@ -893,20 +1019,41 @@ class SendspinServiceController:
     def _should_forward_kodi_player_event(self) -> bool:
         return time.monotonic() >= self._suppress_kodi_player_events_until
 
-    def handle_kodi_pause(self) -> None:
-        if self._should_forward_kodi_player_event():
-            self.logger.info("Forwarding Kodi pause to Sendspin.")
-            self.control.pause()
+    def handle_kodi_pause(self) -> bool:
+        if not self._should_forward_kodi_player_event():
+            return False
+        if self.kodi_pause_is_pending():
+            return True
 
-    def handle_kodi_resume(self) -> None:
+        self._kodi_pause_pending_until = time.monotonic() + 5.0
+        if self.control.pause():
+            self.logger.info("Forwarded Kodi pause to Sendspin.")
+            return True
+
+        self._kodi_pause_pending_until = 0.0
+        self.logger.warning("Sendspin did not accept the Kodi pause command.")
+        return False
+
+    def kodi_pause_is_pending(self) -> bool:
+        return time.monotonic() < self._kodi_pause_pending_until
+
+    def handle_kodi_resume(self) -> bool:
+        self._kodi_pause_pending_until = 0.0
         if self._should_forward_kodi_player_event():
             self.logger.info("Forwarding Kodi resume to Sendspin.")
-            self.control.play()
+            return self.control.play()
+        return False
 
     def send_play(self) -> bool:
         return self.control.play()
 
     def send_pause(self) -> bool:
+        return self.control.pause()
+
+    def send_stop(self) -> bool:
+        if hasattr(self.control, "stop"):
+            return self.control.stop()
+        self.logger.warning("Sendspin backend does not support a stop command; pausing instead.")
         return self.control.pause()
 
     def send_play_pause(self) -> bool:
@@ -918,10 +1065,18 @@ class SendspinServiceController:
     def send_previous_track(self) -> bool:
         return self.control.previous_track()
 
+    def show_pairing_token(self) -> bool:
+        token = self.control.get_pairing_token()
+        if not token:
+            xbmcgui.Dialog().ok("Sendspin", "The native backend pairing token is not available.")
+            return False
+        xbmcgui.Dialog().textviewer("Sendspin pairing token", token)
+        return True
+
     async def cleanup(self) -> None:
-        self.release_sendspin_audio_to_kodi()
-        if self.docker_start_enabled:
-            self.playback_engine.stop()
+        if self._audio_claimed:
+            self.release_sendspin_audio_to_kodi()
         else:
-            self.logger.info("Docker backend cleanup skipped because startup is disabled.")
+            self.restore_kodi_audio_device()
+        await asyncio.get_running_loop().run_in_executor(None, self._stop_native_backend)
         await self.kodi.cleanup()

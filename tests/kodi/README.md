@@ -1,8 +1,8 @@
 # Kodi Container Smoke Test
 
-This harness runs a headless Kodi Omega container with the local add-on bind-mounted into Kodi's add-ons directory. It also starts a tiny mock Sendspin control API so the add-on can exercise its Kodi lifecycle without starting the real Sendspin Docker backend.
+This harness runs a headless Kodi Omega container with the local add-on bind-mounted into Kodi's add-ons directory. It also starts a tiny mock Sendspin control API so the add-on can exercise its Kodi lifecycle without a playback backend.
 
-It is intended for quick bug reproduction and log collection. It does not replace testing on the target LibreELEC/CoreELEC box, because audio device locking, ALSA enumeration, and Docker socket behavior are host-specific.
+It is intended for quick bug reproduction and log collection. It does not replace testing on the target LibreELEC/CoreELEC box, because audio-device locking and ALSA enumeration are host-specific.
 
 ## Run
 
@@ -58,4 +58,77 @@ docker compose -f tests/kodi/docker-compose.yml down
 
 ## What It Skips
 
-The test settings set `docker_start_enabled=false`, so the add-on does not start the real Sendspin playback container. Use this mode for plugin and Kodi integration debugging. For full host integration, test on the target machine with Docker and `/dev/snd` available.
+The mock API exercises Kodi-side routes and player synchronization only. Use
+`native_harness.sh` for the real backend and audio-handoff path.
+
+## Simulated Distribution Smoke Checks
+
+Run the combined Kodi, Ubuntu, and Fedora smoke checks with:
+
+```bash
+tests/kodi/distro_smoke.sh
+```
+
+The command builds x86_64 and i386 backends, runs the headless Kodi add-on
+smoke test, then checks backend libraries and startup in Ubuntu 24.04 and
+Fedora containers. Each distribution check also plays a short silent stream
+through ALSA's software `null` PCM and queries the backend control socket.
+Use `--skip-build` to reuse existing binaries. These checks do not emulate a
+kernel sound device or verify end-to-end Sendspin playback; use
+`native_harness.sh` and a physical target for those checks.
+
+Build the ABI-matched backend with:
+
+```bash
+scripts/build_native_backends_all.sh --arch x86_64
+```
+
+Then run:
+
+```bash
+SENDSPIN_SERVER_URL=ws://192.168.0.161:8927/sendspin tests/kodi/native_harness.sh
+```
+
+By default, the harness resolves the host's current PipeWire/PulseAudio default
+sink to its ALSA card and device when the command starts. This requires `pactl`
+and a default sink backed by an ALSA playback device. For a virtual or otherwise
+unresolvable sink, set `ALSA_DEVICE=hw:CARD,DEVICE` explicitly, for example
+`ALSA_DEVICE=hw:0,0`.
+
+If rootless Podman still hides the host ALSA cards, retry the hardware test
+with the test container privileged:
+
+```bash
+KODI_PRIVILEGED=true \
+SENDSPIN_SERVER_URL=ws://192.168.0.161:8927/sendspin \
+  tests/kodi/native_harness.sh
+```
+
+The native harness uses Podman's host user namespace and retained host groups
+so the container process can access `/dev/snd` through the host's device ACLs.
+If rootless Podman exposes the device nodes but ALSA still reports `Unknown
+PCM`, run the harness rootful with `PODMAN_ROOTFUL=true`.
+
+For a repeatable end-to-end test, create a Music Assistant long-lived access
+token and save it locally (the file is outside the repository):
+
+```bash
+install -d ~/.config/sendspin-kodi
+printf '%s\n' 'YOUR_MUSIC_ASSISTANT_TOKEN' > ~/.config/sendspin-kodi/ma_api_token
+chmod 600 ~/.config/sendspin-kodi/ma_api_token
+```
+
+Then one command starts Kodi, discovers the Sendspin player, searches for a
+test track, starts it through Music Assistant, and follows the Kodi log:
+
+```bash
+tests/kodi/native_playback_test.sh
+```
+
+By default, the test uses the player name `Sendspin Kodi Test` so it does not
+collide with live Kodi instances running on the network. You can override the
+track or player name when needed:
+
+```bash
+MA_QUERY='The Beatles' MA_PLAYER_NAME='Sendspin Kodi Test' tests/kodi/native_playback_test.sh
+```

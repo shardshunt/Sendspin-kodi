@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 # ruff: noqa: E402, N802, I001
+import asyncio
 import os
 import sys
+import types
 import unittest
 import logging
+import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 # Configure standard logging to show detailed output and catch hidden errors
@@ -19,14 +23,12 @@ mock_xbmc = MagicMock()
 mock_xbmcaddon = MagicMock()
 mock_xbmcgui = MagicMock()
 mock_xbmcvfs = MagicMock()
-mock_audio = MagicMock()
 
 # Inject mocks into sys.modules so imports in plugin code use them.
 sys.modules["xbmc"] = mock_xbmc
 sys.modules["xbmcaddon"] = mock_xbmcaddon
 sys.modules["xbmcgui"] = mock_xbmcgui
 sys.modules["xbmcvfs"] = mock_xbmcvfs
-sys.modules["audio"] = mock_audio
 
 # Configure xbmcvfs.translatePath to act as a no-op path translator
 mock_xbmcvfs.translatePath.side_effect = lambda x: x
@@ -39,7 +41,6 @@ class MockAddon:
             "control_url": "http://127.0.0.1:59999",
             "activate_visualisation_enabled": "true",
             "require_dummy_playback": "true",
-            "docker_start_enabled": "false",
         }
 
     def getSetting(self, name):
@@ -178,33 +179,6 @@ mock_xbmc.LOGINFO = 1
 mock_xbmc.log = MagicMock()
 
 
-# Configure the Mock Playback Engine
-class MockDockerPlaybackEngine:
-    def __init__(self, *args, **kwargs):
-        self.volume_scale = 0.3
-        self.audio_device = "0"
-        self.start_count = 0
-        self.stop_count = 0
-
-    def configure_volume_sync(self, volume, muted, delay_ms):
-        pass
-
-    def start(self):
-        self.start_count += 1
-
-    def stop(self):
-        self.stop_count += 1
-
-    def kodi_to_sendspin_volume(self, volume):
-        return int(volume * 0.3)
-
-    def sendspin_to_kodi_volume(self, volume):
-        return int(volume / 0.3)
-
-
-mock_audio.DockerPlaybackEngine.side_effect = MockDockerPlaybackEngine
-
-
 # --- Now Import the actual modules we want to test ---
 import session
 from service import SendspinServiceController
@@ -215,70 +189,6 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         # Reset the mock player state before each test
         MockKodiPlayer.last_instance = None
         mock_xbmc.log.reset_mock()
-
-    @patch("service.SendspinControlClient")
-    def test_backend_requires_recovery_when_control_api_is_down(self, mock_client_class):
-        controller = SendspinServiceController()
-        controller.docker_start_enabled = True
-        controller.control.audio_status = MagicMock(return_value=None)
-        controller.control.get_state = MagicMock(return_value=None)
-        controller.playback_engine._container_is_running = MagicMock(return_value=False)
-        controller.playback_engine._container_exists = MagicMock(return_value=True)
-
-        self.assertTrue(controller.backend_needs_recovery())
-
-    @patch("service.SendspinControlClient")
-    @patch("asyncio.sleep")
-    async def test_restart_backend_refreshes_audio_device_mapping(self, mock_sleep, mock_client_class):
-        controller = SendspinServiceController()
-        controller.docker_start_enabled = True
-        controller.kodi = MagicMock()
-        controller.kodi.get_volume_state.return_value = {"volume": 72, "muted": False}
-        controller.kodi.get_audio_output_device.side_effect = [
-            "ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI",
-            "ALSA:pipewire",
-        ]
-        controller.control.audio_status.return_value = {"released": True}
-        controller.control.get_state.return_value = {"track": {}, "playback": {"speed": 0}, "audio": {"released": True}}
-        controller.playback_engine.start = MagicMock()
-        controller.playback_engine.stop = MagicMock()
-        controller.wait_for_control_api = MagicMock(return_value=True)
-        controller.update_sendspin_audio_device = MagicMock(return_value="hw:1,9")
-        controller.playback_engine.audio_device = "hw:1,10"
-        controller._switch_to_alternate = MagicMock()
-        controller.is_kodi_holding_pcm = MagicMock(return_value=False)
-        controller.restore_kodi_audio_device = MagicMock()
-
-        await controller.restart_backend()
-
-        controller.update_sendspin_audio_device.assert_called_once_with("ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI")
-        self.assertEqual(controller.playback_engine.audio_device, "hw:1,9")
-        controller._switch_to_alternate.assert_called_once_with()
-        controller.is_kodi_holding_pcm.assert_called_once_with()
-        controller.playback_engine.stop.assert_called_once()
-        controller.playback_engine.start.assert_called_once()
-        controller.restore_kodi_audio_device.assert_called_once_with()
-
-    @patch("service.SendspinControlClient")
-    @patch("asyncio.sleep")
-    async def test_restart_backend_preserves_original_device_when_kodi_is_on_temporary_fallback(
-        self, mock_sleep, mock_client_class
-    ):
-        controller = SendspinServiceController()
-        controller.docker_start_enabled = True
-        controller.original_kodi_device = "ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI"
-        controller.kodi = MagicMock()
-        controller.kodi.get_audio_output_device.return_value = "ALSA:pipewire"
-        controller.kodi.get_volume_state.return_value = {"volume": 72, "muted": False}
-        controller.update_sendspin_audio_device = MagicMock(return_value="hw:1,9")
-        controller.playback_engine.start = MagicMock()
-        controller.playback_engine.stop = MagicMock()
-        controller.wait_for_control_api = MagicMock(return_value=True)
-
-        await controller.restart_backend()
-
-        self.assertEqual(controller.original_kodi_device, "ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI")
-        controller.update_sendspin_audio_device.assert_called_once_with("ALSA:pipewire")
 
     @patch("service.SendspinControlClient")
     @patch("asyncio.sleep")
@@ -314,6 +224,13 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
                 "audio": {"released": False},
             },
             # Iteration 2: Playback continues and track info arrives (active playback, speed=1)
+            {
+                "track": {"title": "Test Audio"},
+                "playback": {"speed": 1, "position": 2.0, "duration": 180},
+                "volume": {"volume": 30, "muted": False},
+                "audio": {"released": False},
+            },
+            # Iteration 3: Artist and album arrive after the title, without a title change.
             {
                 "track": {"title": "Test Audio", "artist": "Mock Artist", "album": "Mock Album"},
                 "playback": {"speed": 1, "position": 2.0, "duration": 180},
@@ -441,15 +358,16 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.count = 0
                 self.wake_event_triggered = False
+                self.stop_event_triggered = False
                 self.audio_device_setting_changed = False
 
             def abortRequested(self):
-                # We have 17 states (indices 0 to 16).
+                # We have 18 states (indices 0 to 17).
                 print(f"[TEST RUN] Monitor abortRequested checked. count={self.count}")
-                # Trigger a wake event at iteration 5 to verify the restart backend path
-                if self.count == 5:
+                # Trigger a wake event while the Kodi-side session is active.
+                if self.count == 6:
                     self.wake_event_triggered = True
-                if self.count >= 17:
+                if self.count >= 18:
                     return True
                 self.count += 1
                 return False
@@ -465,7 +383,6 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
 
         # Mock the KodiManager to prevent real JSONRPC queries in tests
         controller = SendspinServiceController()
-        controller.docker_start_enabled = True  # Enable docker start for this test to verify the container restart path
         controller.kodi = MagicMock()
         from unittest.mock import AsyncMock
 
@@ -474,9 +391,24 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         controller.kodi.get_volume_state.return_value = {"volume": 100, "muted": False}
         controller.kodi.set_audio_output_device.return_value = True
 
+        # Keep this unit test independent of the host's PulseAudio/PipeWire
+        # session. The lifecycle behavior is covered here; the helpers that
+        # call pactl are exercised by Kodi/device integration tests instead.
+        controller.route_kodi_to_null_sink = MagicMock()
+        controller.restore_kodi_stream_routing = MagicMock()
+        controller.set_default_sink_to_null = MagicMock()
+        controller.restore_default_sink = MagicMock()
+        controller.suspend_physical_sinks = MagicMock()
+        controller.is_kodi_holding_pcm = MagicMock(return_value=False)
+
         # Run the session loop!
         print("\n[TEST HARNESS] Starting run_session lifecycle test...")
-        await session.run_session(controller)
+
+        async def run_in_executor_immediately(_loop, _executor, function, *args):
+            return function(*args)
+
+        with patch.object(asyncio.BaseEventLoop, "run_in_executor", run_in_executor_immediately):
+            await session.run_session(controller)
         print("[TEST HARNESS] run_session lifecycle finished successfully.")
 
         player = MockKodiPlayer.last_instance
@@ -492,14 +424,13 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         # 1. Acquire audio: should be called twice (Iteration 1: start, Iteration 10: resume after long pause)
         self.assertEqual(mock_client.acquire_audio.call_count, 2, "Expected acquire_audio to be called exactly twice")
 
-        # 2. Release audio: should be called at pause (Iteration 9), stop (Iteration 15), and cleanup (finally block)
-        self.assertEqual(
-            mock_client.release_audio.call_count, 3, "Expected release_audio to be called exactly three times"
-        )
+        # 2. Release audio only on the pause/stop handoffs; cleanup has no claimed audio left.
+        self.assertEqual(mock_client.release_audio.call_count, 2, "Expected release_audio to be called exactly twice")
 
         # 3. Verify Player operations:
         self.assertEqual(len(player.play_calls), 1, "Expected player.play to be called once")
-        self.assertEqual(len(player.update_info_tag_calls), 1, "Expected player.updateInfoTag to be called once")
+        self.assertEqual(len(player.update_info_tag_calls), 4, "Expected startup, enrichment, and reset updates")
+        self.assertEqual(player.update_info_tag_calls[0].tag.getArtist(), "Mock Artist")
         self.assertEqual(
             len(player.stop_calls), 1, "Expected player.stop to be called once (only on full stop, not pause)"
         )
@@ -508,26 +439,248 @@ class TestAudioReleaseAcquireLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_client.pause.call_count, 2, "Expected pause to be called exactly twice")
         self.assertEqual(mock_client.play.call_count, 2, "Expected play to be called exactly twice")
 
-        # 5. Verify backend restart on wake:
-        # 1 start during setup, 1 start during wake = 2 starts.
-        self.assertEqual(
-            controller.playback_engine.start_count, 2, "Expected docker container to start twice (setup + wake)"
-        )
-        # 1 stop during wake, 1 stop during cleanup = 2 stops.
-        self.assertEqual(
-            controller.playback_engine.stop_count, 2, "Expected docker container to stop twice (wake + cleanup)"
-        )
-
         print("[TEST HARNESS] All assertions passed successfully!")
+
+    def test_kodi_stop_notification_marks_stop_request(self):
+        session_path = Path(__file__).resolve().parents[1] / "service.sendspin" / "session.py"
+
+        class RealMonitor:
+            def __init__(self):
+                pass
+
+        class RealPlayer:
+            def __init__(self):
+                pass
+
+        class RealAddon:
+            def getSetting(self, name):
+                return ""
+
+            def getAddonInfo(self, name):
+                if name == "path":
+                    return "/dummy/addon/path"
+                return ""
+
+        namespace = {
+            "__name__": "fresh_session_under_test",
+            "xbmc": types.SimpleNamespace(
+                Monitor=RealMonitor, Player=RealPlayer, executebuiltin=lambda *args, **kwargs: None
+            ),
+            "xbmcaddon": types.SimpleNamespace(Addon=RealAddon),
+            "xbmcgui": types.SimpleNamespace(ListItem=MockListItem),
+            "logger": logging.getLogger("fresh_session_under_test"),
+            "os": os,
+            "asyncio": asyncio,
+        }
+
+        fake_xbmc_module = types.ModuleType("xbmc")
+        fake_xbmc_module.Monitor = RealMonitor
+        fake_xbmc_module.Player = RealPlayer
+        fake_xbmc_module.executebuiltin = lambda *args, **kwargs: None
+
+        fake_xbmcaddon_module = types.ModuleType("xbmcaddon")
+        fake_xbmcaddon_module.Addon = RealAddon
+
+        fake_xbmcgui_module = types.ModuleType("xbmcgui")
+        fake_xbmcgui_module.ListItem = MockListItem
+
+        with patch.dict(
+            sys.modules, {"xbmc": fake_xbmc_module, "xbmcaddon": fake_xbmcaddon_module, "xbmcgui": fake_xbmcgui_module}
+        ):
+            with open(session_path, encoding="utf-8") as handle:
+                exec(handle.read(), namespace)
+
+        controller = MagicMock()
+        monitor = namespace["SendspinMonitor"](controller, MagicMock())
+
+        monitor.onNotification("xbmc", "Player.OnStop", "{}")
+
+        self.assertIs(monitor.stop_event_triggered, True)
+
+    def test_kodi_player_stop_callback_marks_stop_request(self):
+        controller = MagicMock()
+        controller._should_forward_kodi_player_event.return_value = True
+        monitor = type("MonitorState", (), {"stop_event_triggered": False})()
+
+        player = session.SendspinKodiPlayer(controller, monitor)
+        player.onPlayBackStopped()
+
+        self.assertIs(monitor.stop_event_triggered, True)
+
+    def test_dummy_stop_requires_confirmed_disappearance_during_active_sendspin(self):
+        self.assertTrue(session.kodi_dummy_stop_confirmed(True, False, True, False, 1.0))
+        self.assertFalse(session.kodi_dummy_stop_confirmed(True, False, True, False, 0.5))
+        self.assertFalse(session.kodi_dummy_stop_confirmed(True, False, False, False, 2.0))
+        self.assertFalse(session.kodi_dummy_stop_confirmed(True, False, True, True, 2.0))
+        self.assertFalse(session.kodi_dummy_stop_confirmed(False, False, True, False, 2.0))
+
+
+class TestNativeBackendSupervisor(unittest.TestCase):
+    def test_kodi_pause_waits_for_sendspin_state_and_reports_rejection(self):
+        controller = SendspinServiceController()
+        controller.control = MagicMock()
+        controller.control.pause.return_value = True
+
+        self.assertTrue(controller.handle_kodi_pause())
+        self.assertTrue(controller.kodi_pause_is_pending())
+        self.assertTrue(controller.handle_kodi_pause())
+        controller.control.pause.assert_called_once_with()
+
+        controller._kodi_pause_pending_until = 0.0
+        controller.control.pause.return_value = False
+        self.assertFalse(controller.handle_kodi_pause())
+        self.assertFalse(controller.kodi_pause_is_pending())
+
+    def test_kodi_resume_clears_pending_pause(self):
+        controller = SendspinServiceController()
+        controller.control = MagicMock()
+        controller._kodi_pause_pending_until = time.monotonic() + 5.0
+        controller.control.play.return_value = True
+
+        self.assertTrue(controller.handle_kodi_resume())
+        self.assertFalse(controller.kodi_pause_is_pending())
+
+    def test_kodi_pause_state_transition_forwards_once_and_resumes(self):
+        controller = MagicMock()
+
+        paused = session.forward_kodi_pause_state_change(controller, True, True, False)
+        self.assertTrue(paused)
+        controller.handle_kodi_pause.assert_called_once_with()
+
+        paused = session.forward_kodi_pause_state_change(controller, True, True, paused)
+        self.assertTrue(paused)
+        controller.handle_kodi_pause.assert_called_once_with()
+
+        paused = session.forward_kodi_pause_state_change(controller, True, False, paused)
+        self.assertFalse(paused)
+        controller.handle_kodi_resume.assert_called_once_with()
+
+        self.assertFalse(session.forward_kodi_pause_state_change(controller, False, False, paused))
+
+    def test_architecture_aliases(self):
+        self.assertEqual(SendspinServiceController._architecture_name("x86_64"), "x86_64")
+        self.assertEqual(SendspinServiceController._architecture_name("amd64"), "x86_64")
+        self.assertEqual(SendspinServiceController._architecture_name("aarch64"), "aarch64")
+        self.assertEqual(SendspinServiceController._architecture_name("arm64"), "aarch64")
+        self.assertEqual(SendspinServiceController._architecture_name("armv7l"), "armv7")
+
+    @patch("service.os.path.isfile")
+    @patch("service.platform.machine", return_value="aarch64")
+    def test_architecture_backend_precedes_legacy_backend(self, _machine, mock_isfile):
+        mock_isfile.side_effect = lambda path: path.endswith("aarch64/sendspin-kodi-backend")
+
+        path = SendspinServiceController._default_backend_path("/dummy/addon")
+
+        self.assertEqual(path, "/dummy/addon/resources/bin/aarch64/sendspin-kodi-backend")
+
+    @patch("service.os.path.isfile", return_value=False)
+    @patch("service.platform.machine", return_value="armv7l")
+    def test_architecture_backend_falls_back_to_legacy_path(self, _machine, _isfile):
+        path = SendspinServiceController._default_backend_path("/dummy/addon")
+
+        self.assertEqual(path, "/dummy/addon/resources/bin/sendspin-kodi-backend")
+
+    @patch("service.threading.Thread")
+    @patch("service.subprocess.Popen")
+    @patch("service.SendspinControlClient")
+    def test_start_passes_kodi_configuration_and_waits_for_socket(self, mock_client_class, mock_popen, mock_thread):
+        controller = SendspinServiceController()
+        controller.kodi = MagicMock()
+        controller.backend_path = "/native/sendspin-kodi-backend"
+        controller.native_backend_available = True
+        controller.server_url = "ws://sendspin.example:8927/sendspin"
+        controller.player_name = "Kitchen"
+        controller.audio_device_id = "hw:1,10"
+        controller.state_file = "/profile/sendspin/state.json"
+        controller.control_socket_path = "/profile/sendspin/control.sock"
+        controller.kodi.get_volume_state.return_value = {"volume": 80, "muted": True}
+        controller._get_delay_ms = MagicMock(return_value=250)
+
+        process = MagicMock()
+        process.poll.return_value = None
+        mock_popen.return_value = process
+        client = mock_client_class.return_value
+        client.get_state.return_value = {"track": {}}
+
+        self.assertTrue(controller._start_native_backend())
+
+        command = mock_popen.call_args.args[0]
+        self.assertEqual(command[0], controller.backend_path)
+        self.assertEqual(mock_popen.call_args.kwargs["env"]["SENDSPIN_AUDIO_DEVICE"], "hw:1,10")
+        self.assertIn("--server", command)
+        self.assertIn("ws://sendspin.example:8927/sendspin", command)
+        client.set_volume.assert_called_once_with(24, True)
+        client.set_delay.assert_called_once_with(250)
+        mock_thread.return_value.start.assert_called_once_with()
+
+        controller._stop_native_backend()
+        process.terminate.assert_called_once_with()
+
+    @patch("service.threading.Thread")
+    @patch("service.subprocess.Popen")
+    @patch("service.SendspinControlClient")
+    def test_start_reports_child_exit_before_socket_readiness(self, mock_client_class, mock_popen, mock_thread):
+        controller = SendspinServiceController()
+        controller.kodi = MagicMock()
+        controller.backend_path = "/native/sendspin-kodi-backend"
+        controller.native_backend_available = True
+
+        process = MagicMock()
+        process.poll.return_value = 2
+        process.returncode = 2
+        mock_popen.return_value = process
+
+        self.assertFalse(controller._start_native_backend())
+        self.assertGreater(controller._native_backend_retry_at, time.monotonic())
+        mock_client_class.return_value.get_state.assert_not_called()
 
 
 class TestAudioDeviceMapping(unittest.TestCase):
+    def test_backend_setup_leaves_kodi_audio_untouched_until_playback(self):
+        controller = SendspinServiceController()
+        controller.kodi = MagicMock()
+        controller.kodi.get_audio_output_device.return_value = "ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI"
+        controller.native_backend_available = True
+        controller.update_sendspin_audio_device = MagicMock(return_value="hw:1,10")
+        controller.prepare_kodi_audio_for_sendspin = MagicMock()
+        controller.is_kodi_holding_pcm = MagicMock(return_value=True)
+        controller._start_native_backend = MagicMock(return_value=True)
+
+        asyncio.run(controller.setup())
+
+        controller.prepare_kodi_audio_for_sendspin.assert_not_called()
+        controller.is_kodi_holding_pcm.assert_not_called()
+        controller._start_native_backend.assert_called_once_with()
+
+    def test_restore_software_output_to_matching_alsa_device(self):
+        controller = SendspinServiceController()
+        controller.kodi = MagicMock()
+        controller.original_kodi_device = "PULSE:Default|Bluetooth Audio (PULSEAUDIO)"
+        controller.audio_device_id = "hw:1,10"
+        controller.audio_device_override = True
+        controller.original_streamsilence = None
+        controller.kodi.get_audio_output_device.return_value = controller.original_kodi_device
+        controller.kodi.get_audio_output_device_options.return_value = [
+            {"value": "ALSA:hdmi:CARD=PCH,DEV=0|HDA Intel PCH"},
+            {"value": "ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI"},
+        ]
+        controller.restore_physical_card_profiles = MagicMock()
+        controller.restore_default_sink = MagicMock()
+        controller.suspend_physical_sinks = MagicMock()
+        controller._get_audio_device_id = MagicMock(
+            side_effect=lambda device: "hw:1,10" if "DEV=4" in device else "hw:0,3"
+        )
+
+        self.assertTrue(controller.restore_kodi_audio_device())
+
+        controller.kodi.set_audio_output_device.assert_called_once_with("ALSA:hdmi:CARD=HDMI,DEV=4|HDA ATI")
+
     @patch("subprocess.run")
     def test_get_audio_device_id(self, mock_run):
         # Mock aplay -l output
         mock_aplay_output = (
             "**** List of PLAYBACK Hardware Devices ****\n"
-            "card 0: PCH [HDA Intel PCH], device 0: ALC3246 Analog [ALC3246 Analog]\n"
+            "card 0: PCH [HDA Intel PCH], device 0: ALC700 Analog [ALC700 Analog]\n"
             "  Subdevices: 1/1\n"
             "  Subdevice #0: subdevice #0\n"
             "card 0: PCH [HDA Intel PCH], device 3: HDMI 0 [HDMI 0]\n"
@@ -562,6 +715,10 @@ class TestAudioDeviceMapping(unittest.TestCase):
             self.assertEqual(controller._get_audio_device_id("PIPEWIRE:Default|Default Output Device (PIPEWIRE)"), "8")
             self.assertEqual(controller._get_audio_device_id("ALSA:default"), "8")
             self.assertEqual(controller._get_audio_device_id("ALSA:sysdefault"), "8")
+            self.assertEqual(controller._get_audio_device_id("ALSA:hdmi:CARD=PCH,DEV=0|HDA Intel PCH"), "hw:0,3")
+
+            # Kodi's HDMI DEV number can differ from ALSA's PCM index.
+            self.assertEqual(controller._get_audio_device_id("ALSA:hdmi:CARD=PCH,DEV=0|HDA Intel PCH"), "hw:0,3")
 
             # A numeric fallback is resolved to a stable raw ALSA identity
             # when that position exists in the current hardware list.

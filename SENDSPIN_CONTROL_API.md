@@ -1,24 +1,19 @@
 # Sendspin Control API
 
-This document defines the local HTTP API expected by the Kodi Sendspin add-on.
+This document records the control contract used between Kodi and the Sendspin backend.
 
-The API is served by the `sendspin daemon` process running inside the Docker container. Kodi talks to it over the host network.
+Communication between the Kodi Python service and the native C++ backend (`sendspin-kodi-backend`) occurs directly over a private UNIX domain socket (`control.sock`) located in the add-on's profile directory. For external control, integration testing, and container smoke harnesses, the service also provides an HTTP proxy interface on port `59999`.
+
+The same JSON command format is accepted by both the UNIX domain socket (as a single JSON request per connection) and the HTTP proxy (`POST /control`).
 
 ## Defaults
 
-- Base URL: `http://127.0.0.1:59999`
+- Local HTTP proxy: `http://127.0.0.1:59999`
 - Bind host: `127.0.0.1`
 - Port: `59999`
-- Transport: HTTP
+- UNIX socket: `<addon_profile>/sendspin/control.sock`
+- Transport: UNIX Domain Socket / HTTP
 - Encoding: JSON
-
-The Kodi add-on passes the control endpoint into the container using:
-
-```text
---control-api true
---control-host 127.0.0.1
---control-port 59999
-```
 
 ## Error Format
 
@@ -87,6 +82,14 @@ Content-Type: application/json
 }
 ```
 
+### Stop
+
+```json
+{
+  "command": "stop"
+}
+```
+
 ### Set Volume
 
 ```json
@@ -103,6 +106,38 @@ Fields:
 - `muted`: optional boolean, defaults to `false`.
 
 The daemon should apply the volume immediately and reflect the new value in `GET /state`.
+
+### Set Output Delay
+
+```json
+{
+  "command": "set_delay",
+  "delay_ms": 50.0
+}
+```
+
+Fields:
+
+- `delay_ms`: playback offset in milliseconds (float or integer from `0.0` to `5000.0`). Used for multi-room synchronization delay adjustment.
+
+### Pair Token
+
+Retrieve the current Sendspin server pairing token:
+
+```json
+{
+  "command": "pair_token"
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "token": "482019"
+}
+```
 
 ### Seek
 
@@ -125,7 +160,7 @@ Fields:
 }
 ```
 
-Closes the daemon's local audio stream and drops incoming chunks until audio is acquired again. This lets Kodi reclaim the shared audio device without restarting the Docker container.
+Closes the backend's local audio stream and drops incoming chunks until audio is acquired again. This lets Kodi reclaim the shared audio device while retaining the Sendspin connection.
 
 ### Acquire Audio
 
@@ -174,7 +209,7 @@ Example response:
   "playback": {
     "position": 52.3,
     "duration": 210.0,
-    "speed": 1
+    "speed": 1.0
   },
   "volume": {
     "volume": 42,
@@ -198,12 +233,12 @@ Fields:
 - `track.artwork_url`: optional artwork URL.
 - `playback.position`: current playback position in seconds.
 - `playback.duration`: current track duration in seconds.
-- `playback.speed`: `0` for paused, `1000` for normal playback speed (integer multiplier scaled by 1000, e.g. 1000 = 1.0x speed).
+- `playback.speed`: `0.0` for paused/stopped, `1.0` for normal playback speed.
 - `volume.volume`: current Sendspin volume, integer from `0` to `100`.
 - `volume.muted`: current mute state.
 - `connection.connected`: whether the daemon currently has an active Sendspin server connection. This is independent of audio release and playback state.
 - `audio.released`: whether the daemon has released the local audio output device.
-- `audio.stream_active`: whether the daemon currently has an active local audio stream. If the daemon has released the audio device (`released: true`), `stream_active` immediately transitions to `true` when a new stream is received from the server (e.g., during play/resume events), which also sets `playback.speed` to `1000` (speed 1.0). This allows the connecting client to detect the incoming stream and invoke `acquire_audio` to reclaim the audio hardware.
+- `audio.stream_active`: whether the daemon currently has an active local audio stream. If the daemon has released the audio device (`released: true`), `stream_active` immediately transitions to `true` when a new stream is received from the server (e.g., during play/resume events), which also sets `playback.speed` to `1.0`. This allows the connecting client to detect the incoming stream and invoke `acquire_audio` to reclaim the audio hardware.
 
 During startup or idle states, `track`, `playback`, and `volume` may be empty objects, but the response must remain valid JSON:
 

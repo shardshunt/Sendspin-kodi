@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -20,10 +21,16 @@ ROOT = Path(__file__).resolve().parents[1]
 ADDON_DIR = ROOT / "service.sendspin"
 ADDON_XML = ADDON_DIR / "addon.xml"
 SETTINGS_XML = ADDON_DIR / "resources" / "settings.xml"
+NATIVE_BACKEND_ROOT = ADDON_DIR / "resources" / "bin"
+NATIVE_ARCHITECTURES = ("x86_64", "i386", "aarch64", "armv7")
+NATIVE_MATRIX_MANIFEST = ROOT / "build" / "native-backend-matrix.json"
+NATIVE_BUILD_INPUTS = (
+    Path("Containerfile.native-build-ubuntu"),
+    Path("scripts/build_native_backends_all.sh"),
+)
 PYPROJECT = ROOT / "pyproject.toml"
 ASSET_NAME = "service.sendspin.zip"
 ZIP_PATH = ROOT / ASSET_NAME
-DOCKER_PACKAGE_NAME = "sendspin-cli-for-sendspin-kodi"
 API_ROOT = "https://api.github.com"
 
 
@@ -77,22 +84,10 @@ def pyproject_version() -> str:
     return version
 
 
-def docker_image_version() -> str:
-    version_file = ADDON_DIR / "docker_image_version.txt"
-    try:
-        version = version_file.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise ReleaseError(f"Could not read {version_file.relative_to(ROOT)}: {exc}") from exc
-
-    if not version:
-        raise ReleaseError(f"{version_file.relative_to(ROOT)} is empty")
-    return version
-
-
-def validate_versions() -> tuple[str, str, str, list[str]]:
+def validate_versions() -> tuple[str, str, list[str]]:
     errors: list[str] = []
     addon_id, addon_version = "unknown", "unknown"
-    package_version, image_version = "unknown", "unknown"
+    package_version = "unknown"
 
     try:
         addon_id, addon_version = addon_metadata()
@@ -106,11 +101,6 @@ def validate_versions() -> tuple[str, str, str, list[str]]:
     except ReleaseError as exc:
         errors.append(str(exc))
 
-    try:
-        image_version = docker_image_version()
-    except ReleaseError as exc:
-        errors.append(str(exc))
-
     if addon_version != "unknown" and package_version != "unknown":
         if addon_version != package_version:
             errors.append(
@@ -118,11 +108,88 @@ def validate_versions() -> tuple[str, str, str, list[str]]:
                 f"{PYPROJECT.relative_to(ROOT)} has {package_version}"
             )
 
-    return addon_id, addon_version, image_version, errors
+    return addon_id, addon_version, errors
 
 
 def tag_for(version: str, tag_override: str | None = None) -> str:
     return tag_override or f"v{version}"
+
+
+def native_source_fingerprint(source_root: Path = ROOT) -> str:
+    inputs = sorted(
+        [path for path in (source_root / "native").rglob("*") if path.is_file()]
+        + [source_root / relative_path for relative_path in NATIVE_BUILD_INPUTS]
+    )
+    digest = hashlib.sha256()
+    for path in inputs:
+        if not path.is_file():
+            raise ReleaseError(f"Missing native build input {path}")
+        relative_path = path.relative_to(source_root).as_posix().encode("utf-8")
+        digest.update(relative_path + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+def write_native_backend_matrix_manifest(
+    backend_root: Path = NATIVE_BACKEND_ROOT,
+    manifest_path: Path = NATIVE_MATRIX_MANIFEST,
+    source_root: Path = ROOT,
+) -> None:
+    binary_hashes: dict[str, str] = {}
+    for architecture in NATIVE_ARCHITECTURES:
+        backend = backend_root / architecture / "sendspin-kodi-backend"
+        if not backend.is_file() or not os.access(backend, os.X_OK):
+            raise ReleaseError(f"Missing executable native backend for {architecture}: {backend}")
+        binary_hashes[architecture] = hashlib.sha256(backend.read_bytes()).hexdigest()
+
+    manifest = {
+        "format": 1,
+        "architectures": list(NATIVE_ARCHITECTURES),
+        "source_sha256": native_source_fingerprint(source_root),
+        "binaries": binary_hashes,
+    }
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+    temporary_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    temporary_path.replace(manifest_path)
+
+
+def native_backend_matrix_errors(
+    backend_root: Path = NATIVE_BACKEND_ROOT,
+    manifest_path: Path = NATIVE_MATRIX_MANIFEST,
+    source_root: Path = ROOT,
+) -> list[str]:
+    if not manifest_path.is_file():
+        return ["Full native architecture build has not been recorded; run scripts/build_native_backends_all.sh"]
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"Could not read native build matrix manifest: {exc}"]
+    if not isinstance(manifest, dict):
+        return ["Native build matrix manifest has an invalid structure"]
+
+    errors: list[str] = []
+    if manifest.get("format") != 1 or manifest.get("architectures") != list(NATIVE_ARCHITECTURES):
+        errors.append("Native build manifest does not certify the complete supported architecture matrix")
+
+    try:
+        if manifest.get("source_sha256") != native_source_fingerprint(source_root):
+            errors.append("Native build manifest is stale; native sources or build scripts changed")
+    except ReleaseError as exc:
+        errors.append(str(exc))
+
+    recorded_hashes = manifest.get("binaries")
+    if not isinstance(recorded_hashes, dict):
+        errors.append("Native build manifest has no binary hashes")
+        recorded_hashes = {}
+
+    for architecture in NATIVE_ARCHITECTURES:
+        backend = backend_root / architecture / "sendspin-kodi-backend"
+        if not backend.is_file() or not os.access(backend, os.X_OK):
+            errors.append(f"Missing executable native backend for {architecture}")
+        elif recorded_hashes.get(architecture) != hashlib.sha256(backend.read_bytes()).hexdigest():
+            errors.append(f"Native backend for {architecture} differs from the recorded full-matrix build")
+    return errors
 
 
 def repository() -> tuple[str, str]:
@@ -213,7 +280,7 @@ def run_checks(
         all_passed = False
 
     # 1. Metadata Validation (addon.xml, pyproject.toml, settings.xml)
-    addon_id, version, image_version, local_errors = validate_versions()
+    addon_id, version, local_errors = validate_versions()
     metadata_ok = not local_errors
     print_status("Metadata Validation", metadata_ok, f"{addon_id} {version}" if metadata_ok else "")
     for e in local_errors:
@@ -248,13 +315,12 @@ def run_checks(
     if not fmt_ok:
         all_passed = False
 
-    # 2. Remote Checks (GitHub Release Tag and Docker Registry)
+    # 2. Remote Checks (GitHub release tag and version sequence)
     token = token_override or os.environ.get("GITHUB_TOKEN")
     tag = tag_for(version, tag_override)
 
     if not token:
         print_status("GitHub Release Check", True, f"Skipped (no token, tag {tag})")
-        print_status("Docker Image Check", True, "Skipped (no token)")
         print_status("Version Sequence Check", True, "Skipped (no token)")
     else:
         try:
@@ -264,14 +330,6 @@ def run_checks(
                 all_passed = False
             else:
                 print_status("GitHub Release Check", True, f"{tag} available")
-
-            if image_version != "unknown":
-                exists, detail = check_docker_image_exists(owner, image_version, token)
-                if exists:
-                    print_status("Docker Image Check", True, f"{image_version} found")
-                else:
-                    print_status("Docker Image Check", False, detail)
-                    all_passed = False
 
             # Version Sequence Check
             if fmt_ok and version != "unknown":
@@ -299,11 +357,20 @@ def run_checks(
                         print_status("Version Sequence Check", False, "Failed to parse tags")
                         all_passed = False
         except ReleaseError as exc:
-            print_status("GitHub/Docker API", False, str(exc))
+            print_status("GitHub API", False, str(exc))
             all_passed = False
 
     # 3. Build and Layout Validation
     zip_path = None
+    matrix_errors = native_backend_matrix_errors()
+    print_status(
+        "Native Backend Matrix",
+        not matrix_errors,
+        "; ".join(matrix_errors) if matrix_errors else "All architectures match the latest full build",
+    )
+    if matrix_errors:
+        all_passed = False
+
     try:
         zip_path = create_zip()
         print_status("Zip Creation", True, zip_path.name)
@@ -320,47 +387,32 @@ def run_checks(
     return all_passed, zip_path, version, tag, owner, repo
 
 
-def check_docker_image_exists(owner: str, version: str, token: str) -> tuple[bool, str]:
-    """Verifies that the required Docker image tag exists on GHCR using the GitHub API."""
-    last_error = "Package not found"
-    # GitHub distinguishes between users and orgs in the package API path
-    for type_prefix in ("users", "orgs"):
-        status, body, headers = github_request(
-            "GET",
-            f"/{type_prefix}/{owner}/packages/container/{DOCKER_PACKAGE_NAME}/versions?per_page=100",
-            token,
-        )
-        if status == 200:
-            try:
-                versions = json.loads(body.decode("utf-8"))
-                if not isinstance(versions, list):
-                    continue
-                for v in versions:
-                    tags = v.get("metadata", {}).get("container", {}).get("tags", [])
-                    if version in tags:
-                        return True, ""
-                return False, f"Tag '{version}' not found in the last 100 versions of {DOCKER_PACKAGE_NAME}"
-            except (json.JSONDecodeError, KeyError, TypeError):
-                continue
-        elif status != 404:
-            # If we get a 403 or other error, record it
-            last_error = f"HTTP {status}: {body.decode('utf-8', errors='replace').strip()}"
-            # Check if it's a permission issue often seen with tokens
-            if status == 403:
-                last_error += " (Check if token has 'read:packages' scope)"
-
-    return False, last_error
-
-
 def create_zip() -> Path:
     if not ADDON_DIR.is_dir():
         raise ReleaseError(f"Missing addon directory {ADDON_DIR.relative_to(ROOT)}")
+    matrix_errors = native_backend_matrix_errors()
+    if matrix_errors:
+        raise ReleaseError("Native backend matrix validation failed: " + "; ".join(matrix_errors))
+    missing_backends = [
+        architecture
+        for architecture in NATIVE_ARCHITECTURES
+        if not (backend := NATIVE_BACKEND_ROOT / architecture / "sendspin-kodi-backend").is_file()
+        or not os.access(backend, os.X_OK)
+    ]
+    if missing_backends:
+        raise ReleaseError(
+            "Missing native backend architectures: "
+            + ", ".join(missing_backends)
+            + "; build each target with NATIVE_ARCH=<architecture>"
+        )
 
     with zipfile.ZipFile(ZIP_PATH, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path in sorted(ADDON_DIR.rglob("*")):
             if path.is_dir():
                 continue
             if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+                continue
+            if ".sync-conflict-" in path.name or path.name.startswith("."):
                 continue
             archive.write(path, path.relative_to(ROOT).as_posix())
 
@@ -384,6 +436,11 @@ def verify_zip_layout(zip_path: Path, addon_id: str, version: str) -> list[str]:
                         errors.append(f"id in zip is {root.attrib.get('id')!r}")
                     if root.attrib.get("version") != version:
                         errors.append(f"version in zip is {root.attrib.get('version')!r}")
+
+            for architecture in NATIVE_ARCHITECTURES:
+                backend_in_zip = f"{addon_id}/resources/bin/{architecture}/sendspin-kodi-backend"
+                if backend_in_zip not in namelist:
+                    errors.append(f"missing {backend_in_zip}")
 
             forbidden = [n for n in namelist if "__pycache__" in n or n.endswith((".pyc", ".pyo"))]
             if forbidden:
@@ -461,16 +518,50 @@ def main() -> int:
         help="validate versions, check the GitHub release tag is unused, and build the release zip",
     )
     parser.add_argument("--publish", action="store_true", help="create the GitHub release and upload the release zip")
+    parser.add_argument(
+        "--package",
+        action="store_true",
+        help="build and validate the release zip without publishing",
+    )
+    parser.add_argument(
+        "--record-native-backend-matrix",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--tag", help="override the release tag; defaults to v<version>")
     parser.add_argument("--token", help="GitHub API token (overrides GITHUB_TOKEN env var)")
     parser.add_argument("--force", action="store_true", help="force publish even if validation checks fail")
     args = parser.parse_args()
 
-    if args.check == args.publish:
-        parser.error("choose exactly one of --check or --publish")
+    if args.record_native_backend_matrix:
+        try:
+            write_native_backend_matrix_manifest()
+        except ReleaseError as exc:
+            print_status("Native Backend Matrix", False, str(exc))
+            return 1
+        print_status("Native Backend Matrix", True, "Recorded complete architecture build")
+        return 0
+
+    actions = [args.check, args.publish, args.package]
+    if actions.count(True) != 1:
+        parser.error("choose exactly one of --check, --publish, or --package")
 
     try:
-        if args.publish:
+        if args.package:
+            addon_id, version, local_errors = validate_versions()
+            if local_errors:
+                for e in local_errors:
+                    print_status("  > Error", False, e)
+                return 1
+            zip_path = create_zip()
+            print_status("Zip Creation", True, str(zip_path.relative_to(ROOT)))
+            zip_errors = verify_zip_layout(zip_path, addon_id, version)
+            if zip_errors:
+                print_status("Zip Layout Check", False, ", ".join(zip_errors))
+                return 1
+            print_status("Zip Layout Check", True, "Valid")
+            print(f"Created {zip_path.name} ({zip_path.stat().st_size:,} bytes)")
+        elif args.publish:
             publish(args.tag, args.token, args.force)
         else:
             success, _, _, _, _, _ = run_checks(args.tag, args.token)

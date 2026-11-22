@@ -18,6 +18,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y podman
+
+      - name: Build and verify all native architectures
+        run: scripts/build_native_backends_all.sh
+
       - name: Publish release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
