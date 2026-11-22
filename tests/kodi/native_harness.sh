@@ -10,6 +10,7 @@ if [[ -n "${NATIVE_BACKEND:-}" ]]; then
 else
   case "$(uname -m)" in
     x86_64|amd64) native_arch=x86_64 ;;
+    i386|i486|i586|i686) native_arch=i386 ;;
     aarch64|arm64) native_arch=aarch64 ;;
     armv7|armv7l|armhf) native_arch=armv7 ;;
     *) native_arch="$(uname -m)" ;;

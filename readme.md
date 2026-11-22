@@ -10,12 +10,12 @@ This addon was developed with the assistance of AI.
 
 ## Building Native Backends
 
-The native backend (`sendspin-kodi-backend`) is compiled with CMake, C++20, and ALSA/PortAudio support, with pinned `sendspin-cpp` dependencies. Multi-architecture builds are supported for `x86_64`, `aarch64`, and `armv7`.
+The native backend (`sendspin-kodi-backend`) is compiled with CMake, C++20, and ALSA/PortAudio support, with pinned `sendspin-cpp` dependencies. Multi-architecture builds are supported for `x86_64`, `i386`, `aarch64`, and `armv7`.
 
 The recommended build uses a containerized Ubuntu 22.04 LTS cross-compilation environment (Podman):
 
 ```bash
-# Build the complete multi-arch matrix simultaneously in parallel (x86_64, aarch64, armv7):
+# Build the complete multi-arch matrix simultaneously in parallel (x86_64, i386, aarch64, armv7):
 scripts/build_native_backends_all.sh
 
 # Build a single architecture:
@@ -37,6 +37,7 @@ architecture build is only for local development and device testing.
 
 Compiled executables are staged per architecture under:
 - `service.sendspin/resources/bin/x86_64/sendspin-kodi-backend`
+- `service.sendspin/resources/bin/i386/sendspin-kodi-backend`
 - `service.sendspin/resources/bin/aarch64/sendspin-kodi-backend`
 - `service.sendspin/resources/bin/armv7/sendspin-kodi-backend`
 
@@ -60,7 +61,7 @@ The script streams the add-on files while preserving remote Python libraries in 
 
 ## Usage
 
-When the service starts, it automatically detects the host architecture (`platform.machine()`) and launches the corresponding backend binary from `resources/bin/<arch>/sendspin-kodi-backend` (falling back to legacy unnested path if needed).
+When the service starts, it automatically detects the host architecture (`platform.machine()`) and launches the corresponding backend binary from `resources/bin/<arch>/sendspin-kodi-backend` (falling back to legacy unnested path if needed). The `i386` backend is cross compiled; its runtime compatibility still needs validation on a 32-bit Kodi target.
 
 The backend advertises Kodi as a Sendspin player over mDNS using the `_sendspin._tcp` service, port `8928`, and the `/sendspin` path. Music Assistant can discover Kodi on the local network. If `Sendspin server WebSocket URL` is configured, the backend also connects directly to that URL; otherwise it waits for an inbound server connection. On Linux, the backend links to Avahi's client library for DNS-SD advertisement. Communication between the Kodi Python service and the native backend occurs over a UNIX domain socket (`control.sock`).
 

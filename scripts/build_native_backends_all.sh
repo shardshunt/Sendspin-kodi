@@ -30,12 +30,12 @@ When multiple architectures are specified, they build simultaneously in parallel
 with clear progress reporting.
 
 Architectures:
-  ARCH                       One or more architectures to build: x86_64, aarch64, armv7.
-                             Defaults to all ('x86_64 aarch64 armv7') if omitted.
+  ARCH                       One or more architectures to build: x86_64, i386, aarch64, armv7.
+                             Defaults to all ('x86_64 i386 aarch64 armv7') if omitted.
 
 Options:
   -a, --arch ARCH            Target architecture (can be specified multiple times).
-      --all                  Build all supported architectures (x86_64, aarch64, armv7).
+      --all                  Build all supported architectures (x86_64, i386, aarch64, armv7).
       --parallel             Build architectures simultaneously in parallel (default).
       --serial, --no-parallel
                              Build architectures sequentially one after another.
@@ -66,9 +66,9 @@ EOF
 
 add_cli_arch() {
   case "$1" in
-    x86_64|aarch64|armv7) ;;
+    x86_64|i386|aarch64|armv7) ;;
     *)
-      echo "Error: Unsupported architecture '$1'; use x86_64, aarch64, or armv7" >&2
+      echo "Error: Unsupported architecture '$1'; use x86_64, i386, aarch64, or armv7" >&2
       exit 1
       ;;
   esac
@@ -99,7 +99,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --all)
-      CLI_ARCHES=" x86_64 aarch64 armv7"
+      CLI_ARCHES=" x86_64 i386 aarch64 armv7"
       shift
       ;;
     --parallel)
@@ -223,14 +223,14 @@ elif [ -n "${NATIVE_ARCH:-}" ]; then
 elif [ -n "${NATIVE_ARCHES:-}" ]; then
   RAW_ARCHES="$NATIVE_ARCHES"
 else
-  RAW_ARCHES="x86_64 aarch64 armv7"
+  RAW_ARCHES="x86_64 i386 aarch64 armv7"
 fi
 
 for arch in $RAW_ARCHES; do
   case "$arch" in
-    x86_64|aarch64|armv7) ;;
+    x86_64|i386|aarch64|armv7) ;;
     *)
-      echo "Error: Unsupported architecture '$arch'; use x86_64, aarch64, or armv7" >&2
+      echo "Error: Unsupported architecture '$arch'; use x86_64, i386, aarch64, or armv7" >&2
       exit 1
       ;;
   esac
@@ -296,6 +296,10 @@ compile_architecture() {
           export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}"
           ;;
       esac
+      ;;
+    i386)
+      cmake_cross_args="-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=i686 -DCMAKE_C_COMPILER=i686-linux-gnu-gcc -DCMAKE_CXX_COMPILER=i686-linux-gnu-g++"
+      export PKG_CONFIG_LIBDIR="/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig"
       ;;
     aarch64)
       case "$host_arch" in
@@ -626,7 +630,7 @@ fi
 
 if [ "$WORKER" -eq 0 ]; then
   MATRIX_COMPLETE=1
-  for required_arch in x86_64 aarch64 armv7; do
+  for required_arch in x86_64 i386 aarch64 armv7; do
     case " $TARGET_ARCHES " in
       *" $required_arch "*) ;;
       *) MATRIX_COMPLETE=0 ;;

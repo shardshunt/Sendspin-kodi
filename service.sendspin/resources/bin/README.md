@@ -2,7 +2,7 @@
 
 The release ZIP must contain target-compatible executables named
 `sendspin-kodi-backend` under architecture directories. Supported directory
-names are `x86_64`, `aarch64`, and `armv7`. The service selects the directory
+names are `x86_64`, `i386`, `aarch64`, and `armv7`. The service selects the directory
 matching `platform.machine()` and falls back to the legacy flat path for
 backwards compatibility.
 
@@ -14,9 +14,11 @@ scripts/build_native_backends_all.sh --arch x86_64
 ```
 
 Run the build on each target architecture, changing `--arch` to
-`aarch64` or `armv7`. `--arch` controls the staging directory; a
+`i386`, `aarch64`, or `armv7`. `--arch` controls the staging directory; a
 cross-compiler/toolchain is still required when building for a different
-architecture.
+architecture. The `i386` target is cross compiled as 32-bit x86 and must be
+validated on a compatible 32-bit Kodi device before claiming runtime support.
+The current binary requires glibc 2.34 and libstdc++ 3.4.30 or newer.
 
 To build the complete matrix sequentially:
 
@@ -32,7 +34,7 @@ scripts/build_native_backends_all.sh --arch x86_64
 
 Selected-architecture builds are for development and target-device testing
 only. Before any GitHub release, always run the full default matrix. Only a
-successful build of `x86_64`, `aarch64`, and `armv7` records release validation;
+successful build of `x86_64`, `i386`, `aarch64`, and `armv7` records release validation;
 the release packager verifies that the manifest matches the current native
 sources and all packaged binaries. `--force` cannot bypass this check.
 
