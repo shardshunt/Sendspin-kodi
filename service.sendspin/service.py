@@ -23,6 +23,7 @@ class SendspinServiceController:
         addon_path = addon.getAddonInfo("path")
         configured_backend_path = (addon.getSetting("backend_path") or "").strip()
         self.backend_path = configured_backend_path or self._default_backend_path(addon_path)
+        self._ensure_backend_executable()
         profile_path = addon.getAddonInfo("profile")
         if profile_path:
             try:
@@ -82,6 +83,15 @@ class SendspinServiceController:
         if os.path.isfile(architecture_path):
             return architecture_path
         return legacy_path
+
+    def _ensure_backend_executable(self) -> None:
+        if os.path.isfile(self.backend_path) and not os.access(self.backend_path, os.X_OK):
+            try:
+                current_mode = os.stat(self.backend_path).st_mode
+                os.chmod(self.backend_path, current_mode | 0o755)
+                self.logger.info("Restored execute permissions on backend binary: %s", self.backend_path)
+            except Exception as e:
+                self.logger.warning("Could not set execute permissions on %s: %s", self.backend_path, e)
 
     def _control_url_from_port(self, addon) -> str:
         port = addon.getSetting("proxy_port") or "59999"
@@ -365,6 +375,66 @@ class SendspinServiceController:
             return bool(status.get("released", False))
         return False
 
+    def _get_default_sink_alsa_device(self) -> str | None:
+        """Resolve the active PipeWire/PulseAudio default sink to an ALSA hw:card,device identity."""
+        import shutil
+
+        if not shutil.which("pactl"):
+            return None
+
+        try:
+            res = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=5)
+            default_sink = res.stdout.strip()
+            if not default_sink or default_sink == "dummy_sink":
+                return None
+
+            res_sinks = subprocess.run(["pactl", "list", "sinks"], capture_output=True, text=True, timeout=5)
+            sink_blocks = re.split(r"(?m)^Sink #", res_sinks.stdout)
+            for block in sink_blocks:
+                if f"Name: {default_sink}" in block:
+                    card_m = re.search(r'alsa\.card\s*=\s*"(\d+)"', block)
+                    dev_m = re.search(r'alsa\.device\s*=\s*"(\d+)"', block)
+                    if card_m and dev_m:
+                        return f"hw:{card_m.group(1)},{dev_m.group(1)}"
+        except Exception as e:
+            self.logger.debug("Failed to resolve default sink ALSA device from pactl: %s", e)
+        return None
+
+    @staticmethod
+    def _parse_proc_asound() -> tuple[dict[int, str], list[dict]]:
+        """Parse /proc/asound/cards and /proc/asound/pcm when aplay is unavailable."""
+        hardware_cards: dict[int, str] = {}
+        global_device_list: list[dict] = []
+        try:
+            if os.path.isfile("/proc/asound/cards"):
+                with open("/proc/asound/cards", encoding="utf-8") as f:
+                    for line in f:
+                        m = re.match(r"^\s*(\d+)\s+\[(.*?)\s*\]:\s*(.*)", line)
+                        if m:
+                            card_idx = int(m.group(1))
+                            card_desc = m.group(3).strip()
+                            parts = card_desc.split(" - ")
+                            hardware_cards[card_idx] = parts[-1] if len(parts) > 1 else card_desc
+        except Exception:
+            pass
+
+        try:
+            if os.path.isfile("/proc/asound/pcm"):
+                with open("/proc/asound/pcm", encoding="utf-8") as f:
+                    for line in f:
+                        m = re.match(r"^\s*(\d+)-(\d+):\s*(.*?)\s*:\s*(.*?)\s*:\s*(.*)", line)
+                        if m:
+                            card_idx = int(m.group(1))
+                            dev_idx = int(m.group(2))
+                            label = m.group(3).strip()
+                            streams = m.group(5)
+                            if "playback" in streams:
+                                global_device_list.append({"card": card_idx, "device": dev_idx, "label": label})
+        except Exception:
+            pass
+
+        return hardware_cards, global_device_list
+
     def _get_audio_device_id(self, device_string: str) -> str:
         """Maps Kodi strings to ALSA indices by matching both hardware numbers and port labels."""
         fallback = xbmcaddon.Addon().getSetting("fallback_audio_device") or "0"
@@ -379,6 +449,12 @@ class SendspinServiceController:
         if not is_default and "alsa:" not in clean_dev:
             return fallback
 
+        if is_default:
+            default_alsa = self._get_default_sink_alsa_device()
+            if default_alsa:
+                self.logger.info("Resolved system default audio sink to ALSA device %s", default_alsa)
+                return default_alsa
+
         # 1. Parse Kodi string (e.g., CARD=HDMI,DEV=4)
         card_match = re.search(r"CARD=([^,|]+)", device_string)
         dev_match = re.search(r"DEV=(\d+)", device_string)
@@ -390,30 +466,37 @@ class SendspinServiceController:
         target_dev_num = int(dev_match.group(1)) if dev_match else None
 
         try:
-            # 2. Capture hardware state
-            result = subprocess.run(["aplay", "-l"], capture_output=True, text=True, timeout=10)
-            if result.returncode != 0:
-                return fallback
-
-            lines = result.stdout.split("\n")
             hardware_cards = {}  # {card_idx: "Long Name"}
             global_device_list = []  # List of {'card': idx, 'device': idx, 'label': str}
 
-            for line in lines:
-                if line.startswith("card "):
-                    card_idx = int(line.split(":")[0].split()[1])
+            try:
+                # 2. Capture hardware state
+                result = subprocess.run(["aplay", "-l"], capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    lines = result.stdout.split("\n")
+                    for line in lines:
+                        if line.startswith("card "):
+                            card_idx = int(line.split(":")[0].split()[1])
 
-                    # Update card names map
-                    name_bracket = re.search(r"\[(.*?)\]", line)
-                    if name_bracket and card_idx not in hardware_cards:
-                        hardware_cards[card_idx] = name_bracket.group(1)
+                            # Update card names map
+                            name_bracket = re.search(r"\[(.*?)\]", line)
+                            if name_bracket and card_idx not in hardware_cards:
+                                hardware_cards[card_idx] = name_bracket.group(1)
 
-                    # Extract device index and its label (e.g., "HDMI 4 [Panasonic-TV]")
-                    dev_info = re.search(r"device (\d+): (.*)", line)
-                    if dev_info:
-                        global_device_list.append(
-                            {"card": card_idx, "device": int(dev_info.group(1)), "label": dev_info.group(2)}
-                        )
+                            # Extract device index and its label (e.g., "HDMI 4 [Panasonic-TV]")
+                            dev_info = re.search(r"device (\d+): (.*)", line)
+                            if dev_info:
+                                global_device_list.append(
+                                    {"card": card_idx, "device": int(dev_info.group(1)), "label": dev_info.group(2)}
+                                )
+            except Exception as e:
+                self.logger.debug("aplay -l unavailable or failed: %s", e)
+
+            if not hardware_cards and not global_device_list:
+                hardware_cards, global_device_list = self._parse_proc_asound()
+
+            if not hardware_cards and not global_device_list:
+                return fallback
 
             # If Kodi is using a generic/software device, use the configured
             # fallback. Numeric fallbacks retain their legacy aplay ordering
@@ -483,11 +566,6 @@ class SendspinServiceController:
                 self.logger.error(f"Device {target_dev_num} not found by index or label on Card {matched_card_idx}.")
                 return fallback
 
-            # 5. Pass the hardware identity to Sendspin instead of a global
-            # ordinal. The set/order of PortAudio devices can change when an
-            # HDMI endpoint is re-enumerated (especially after a backend
-            # restart), while hw:<card>,<device> remains tied to the target
-            # ALSA PCM.
             return f"hw:{matched_card_idx},{final_device_idx}"
 
         except Exception as e:
@@ -549,9 +627,14 @@ class SendspinServiceController:
             if not ready:
                 self.logger.error("Native backend failed to start; Kodi audio routing remains unchanged.")
         else:
-            self.logger.error(
-                "Native backend executable is not installed at %s; playback is unavailable.", self.backend_path
-            )
+            if os.path.isfile(self.backend_path):
+                self.logger.error(
+                    "Native backend executable is not executable at %s; playback is unavailable.", self.backend_path
+                )
+            else:
+                self.logger.error(
+                    "Native backend executable is not installed at %s; playback is unavailable.", self.backend_path
+                )
 
     def _switch_to_alternate(self):
         if not self.original_kodi_device:
